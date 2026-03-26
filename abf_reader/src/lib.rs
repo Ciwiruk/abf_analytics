@@ -1245,12 +1245,12 @@ pub struct AbfReader {
 }
 
 impl AbfReader {
-    /// Opens the ABF file and parses only Group 1 and Group 2 by default.
+    /// Opens the ABF file and parses only Group 1 and Group 2 and Group 3 by default.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::open_with_options(path, AbfHeaderReadOptions::default())
     }
 
-    /// Opens the ABF file and parses Group 1 and Group 2 plus any enabled groups.
+    /// Opens the ABF file and parses any enabled groups.
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: AbfHeaderReadOptions) -> io::Result<Self> {
         let mut file = File::open(path)?;
 
