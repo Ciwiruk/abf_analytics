@@ -1331,34 +1331,141 @@ impl AbfReader {
     }
 
     pub fn read_channels(&mut self) -> io::Result<Vec<Vec<f32>>> {
-        // Sample rate (Hz) for each channel
-        //let sample_rate = (1e6 / group3.adc_sample_interval) as i16 / num_channels as i16;
-        //println!("Sample rate: {} Hz", sample_rate);
-
         // Number of input channels recorded
         let num_channels: usize = self.header.group3_trial_hierarchy.as_ref().unwrap().adc_num_channels as usize;
-        //println!("Number of channels: {}", num_channels);
 
         // Total number of samples acquired across all channels
         let acq_length = self.header.group1_file_id.as_ref().unwrap().actual_acq_length as usize;
-        //println!("Total samples acquired: {}", acq_length);
 
         // Number of samples acquired per channel
         let per_channel_samples: usize = acq_length / num_channels;
-        //println!("Samples per channel: {}", per_channel_samples);
 
-        // Read the raw data and print the number of samples read
+        // Read the raw data
         let raw_data = self.read_raw_data().unwrap();
-        //println!("Read {} samples of raw data", raw_data.len());
 
-        // Split the raw data into separate channels
+        // Extract hardware scaling factors
+        let (_adc_range, _adc_resolution) = if let Some(group5) = &self.header.group5_hardware {
+            (group5.adc_range as f64, group5.adc_resolution as f64)
+        } else {
+            (10.0, 32768.0) // Default values
+        };
+
+        let (instrument_scale_factors, adc_gains, instrument_offsets) = if let Some(group7) = &self.header.group7_multichannel {
+            (
+                group7.instrument_scale_factor.map(|v| v as f64),
+                group7.adc_programmable_gain.map(|v| v as f64),
+                group7.instrument_offset.map(|v| v as f64),
+            )
+        } else {
+            ([1.0; 16], [1.0; 16], [0.0; 16])
+        };
+
+        // Split the raw data into separate channels and apply scaling
         let mut channels = vec![Vec::with_capacity(per_channel_samples); num_channels];
-        for (i, &sample) in raw_data.iter().enumerate() {
-            channels[i % num_channels].push(sample);
+        for (i, &raw_value) in raw_data.iter().enumerate() {
+            let ch_idx = i % num_channels;
+
+            // Apply scaling: raw_adc / (instrument_gain * programmable_gain)
+            // InstrumentScaleFactor represents the gain in the transducer/amplifier chain
+            // Dividing by it converts from raw ADC counts to physical units
+            let scaled_value = (raw_value as f64) / (instrument_scale_factors[ch_idx] * adc_gains[ch_idx]) + instrument_offsets[ch_idx];
+
+            channels[ch_idx].push(scaled_value as f32);
         }
-        //println!("Split data into {} channels", channels.len());
 
         Ok(channels)
+    }
+
+    /// Get the sample rate in Hz
+    pub fn get_sample_rate(&self) -> f64 {
+        if let Some(group3) = &self.header.group3_trial_hierarchy {
+            1_000_000.0 / group3.adc_sample_interval as f64
+        } else {
+            1.0
+        }
+    }
+
+    /// Get total recording duration in seconds
+    pub fn get_duration_seconds(&self) -> f64 {
+        let group1 = self.header.group1_file_id.as_ref();
+        let group3 = self.header.group3_trial_hierarchy.as_ref();
+
+        if let (Some(g1), Some(g3)) = (group1, group3) {
+            let num_channels = g3.adc_num_channels as f64;
+            let total_samples = g1.actual_acq_length as f64;
+            let samples_per_channel = total_samples / num_channels;
+            let sample_rate = 1_000_000.0 / g3.adc_sample_interval as f64;
+            samples_per_channel / sample_rate
+        } else {
+            0.0
+        }
+    }
+
+    /// Read channels for a specific time window (in seconds)
+    pub fn read_channels_time_window(&mut self, time_start_sec: f64, time_end_sec: f64) -> io::Result<Vec<Vec<f32>>> {
+        let num_channels: usize = self.header.group3_trial_hierarchy.as_ref().unwrap().adc_num_channels as usize;
+        let sample_rate = self.get_sample_rate();
+        let max_samples = self.header.group1_file_id.as_ref().unwrap().actual_acq_length as usize / num_channels;
+
+        // Convert time to sample indices
+        let start_sample = (time_start_sec * sample_rate) as usize;
+        let end_sample = ((time_end_sec * sample_rate) as usize).min(max_samples);
+
+        // Read all channels
+        let all_channels = self.read_channels()?;
+
+        // Slice each channel to the time window
+        let mut windowed_channels = vec![];
+        for ch in all_channels {
+            let windowed: Vec<f32> = ch.iter().skip(start_sample).take(end_sample - start_sample).copied().collect();
+            windowed_channels.push(windowed);
+        }
+
+        Ok(windowed_channels)
+    }
+
+    /// Get ADC channel names
+    pub fn get_adc_channel_names(&self) -> Vec<String> {
+        if let Some(group7) = &self.header.group7_multichannel {
+            group7.adc_channel_name.to_vec()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Get ADC channel units
+    pub fn get_adc_units(&self) -> Vec<String> {
+        if let Some(group7) = &self.header.group7_multichannel {
+            group7.adc_units.to_vec()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Get ADC unit for a specific channel
+    pub fn get_adc_unit(&self, channel_idx: usize) -> String {
+        if let Some(group7) = &self.header.group7_multichannel {
+            if channel_idx < group7.adc_units.len() {
+                group7.adc_units[channel_idx].trim().to_string()
+            } else {
+                "".to_string()
+            }
+        } else {
+            "".to_string()
+        }
+    }
+
+    /// Get ADC channel name for a specific channel
+    pub fn get_adc_channel_name(&self, channel_idx: usize) -> String {
+        if let Some(group7) = &self.header.group7_multichannel {
+            if channel_idx < group7.adc_channel_name.len() {
+                group7.adc_channel_name[channel_idx].trim().to_string()
+            } else {
+                format!("Channel {}", channel_idx)
+            }
+        } else {
+            format!("Channel {}", channel_idx)
+        }
     }
 }
 
@@ -1372,6 +1479,8 @@ mod tests {
             "../Example.abf",
             AbfHeaderReadOptions {
                 group3_trial_hierarchy: true,
+                group5_hardware: true,
+                group7_multichannel: true,
                 ..Default::default()
             },
         )
