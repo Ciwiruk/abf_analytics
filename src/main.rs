@@ -56,6 +56,7 @@ enum Message {
     AddCustomSineWave,
     RemoveCustomSineWave(usize),
     ToggleFFTOnPeaks,
+    ToggleFFTSmoothing,
     OpenFileDialog,
     SetReconstructionPositionInput(String),
     SetReconstructionViewWindowInput(String),
@@ -102,6 +103,7 @@ struct AbfAnalytics {
     reconstruction_offset_input: String,      // offset input for sine reconstruction
     reconstruction_offset: f32,               // vertical offset for sine wave
     fft_on_peaks: bool,                       // perform FFT on detected peaks instead of raw signal
+    fft_smoothing: bool,                      // smooth FFT magnitudes to reduce spectral noise
 
     // File selection on start screen
     selected_file_path: String,
@@ -146,6 +148,7 @@ impl AbfAnalytics {
             reconstruction_offset_input: "0.0".to_string(),
             reconstruction_offset: 0.0,
             fft_on_peaks: false,
+            fft_smoothing: false,
             selected_file_path: "Example.abf".to_string(),
             screen: Screen::Selecting,
         }
@@ -187,6 +190,7 @@ impl AbfAnalytics {
                                     *analysis_type,
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
+                                    self.fft_smoothing,
                                 );
                                 new_widgets.push(widget);
                             }
@@ -271,6 +275,7 @@ impl AbfAnalytics {
                                 *analysis_type,
                                 &self.custom_sine_waves,
                                 self.fft_on_peaks,
+                                self.fft_smoothing,
                             );
                             new_widgets.push(widget);
                         }
@@ -374,6 +379,7 @@ impl AbfAnalytics {
                                         *analysis_type,
                                         &self.custom_sine_waves,
                                         self.fft_on_peaks,
+                                        self.fft_smoothing,
                                     );
                                     new_widgets.push(widget);
                                 }
@@ -415,6 +421,7 @@ impl AbfAnalytics {
                             analysis_type,
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
+                            self.fft_smoothing,
                         );
                         widgets.push(widget);
                     }
@@ -473,6 +480,7 @@ impl AbfAnalytics {
                             *analysis_type,
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
+                            self.fft_smoothing,
                         );
                         new_widgets.push(widget);
                     }
@@ -503,6 +511,7 @@ impl AbfAnalytics {
                             *analysis_type,
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
+                            self.fft_smoothing,
                         );
                         new_widgets.push(widget);
                     }
@@ -557,6 +566,7 @@ impl AbfAnalytics {
                                     *analysis_type,
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
+                                    self.fft_smoothing,
                                 );
                                 new_widgets.push(widget);
                             }
@@ -629,6 +639,7 @@ impl AbfAnalytics {
                                             *analysis_type,
                                             &self.custom_sine_waves,
                                             self.fft_on_peaks,
+                                            self.fft_smoothing,
                                         );
                                         new_widgets.push(widget);
                                     }
@@ -674,6 +685,7 @@ impl AbfAnalytics {
                                         *analysis_type,
                                         &self.custom_sine_waves,
                                         self.fft_on_peaks,
+                                        self.fft_smoothing,
                                     );
                                     new_widgets.push(widget);
                                 }
@@ -724,6 +736,7 @@ impl AbfAnalytics {
                                     *analysis_type,
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
+                                    self.fft_smoothing,
                                 );
                                 new_widgets.push(widget);
                             }
@@ -746,16 +759,41 @@ impl AbfAnalytics {
                     }
                 }
             }
+            Message::ToggleFFTSmoothing => {
+                self.fft_smoothing = !self.fft_smoothing;
+                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    if *analysis_type == AnalysisType::FourierTransform {
+                        let mut new_widgets = Vec::new();
+                        for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                            if selected {
+                                let widget = build_analysis_plot(
+                                    &self.channels[ch_idx],
+                                    &self.channel_names[ch_idx],
+                                    &self.channel_units[ch_idx],
+                                    self.sample_rate,
+                                    self.view_duration,
+                                    self.time_offset,
+                                    &self.x_axis_link,
+                                    *analysis_type,
+                                    &self.custom_sine_waves,
+                                    self.fft_on_peaks,
+                                    self.fft_smoothing,
+                                );
+                                new_widgets.push(widget);
+                            }
+                        }
+                        *widgets = new_widgets;
+                    }
+                }
+            }
             Message::OpenFileDialog => {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("ABF Files", &["abf"])
                     .add_filter("All Files", &["*"])
                     .pick_file()
                 {
-                    if let Some(file_name) = path.file_name() {
-                        if let Some(name_str) = file_name.to_str() {
-                            self.selected_file_path = name_str.to_string();
-                        }
+                    if let Some(path_str) = path.to_str() {
+                        self.selected_file_path = path_str.to_string();
                     }
                 }
             }
@@ -856,7 +894,7 @@ impl AbfAnalytics {
             // Height slider
             let height_control = row![
                 text("Graph Height:").size(11).width(90),
-                slider(50.0..=300.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
+                slider(50.0..=500.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
                 text(format!("{:.0}px", self.graph_height)).size(11).width(50),
             ]
             .spacing(10)
@@ -926,6 +964,9 @@ impl AbfAnalytics {
                         checkbox(self.fft_on_peaks)
                             .label("FFT on Detected Peaks Only")
                             .on_toggle(|_| Message::ToggleFFTOnPeaks),
+                        checkbox(self.fft_smoothing)
+                            .label("FFT Smoothing")
+                            .on_toggle(|_| Message::ToggleFFTSmoothing),
                         space().width(Fill),
                     ]
                     .spacing(20)
@@ -1176,11 +1217,11 @@ impl AbfAnalytics {
 }
 
 fn build_zoomed_widgets_data(
-    channels: &Vec<Vec<f32>>,
+    channels: &[Vec<f32>],
     channel_selected: &[bool; 9],
     sample_rate: f64,
-    channel_names: &Vec<String>,
-    channel_units: &Vec<String>,
+    channel_names: &[String],
+    channel_units: &[String],
     view_duration: f64,
     time_offset: f64,
     x_axis_link: &AxisLink,
@@ -1260,16 +1301,14 @@ fn build_zoomed_widgets_data(
 
                 // Build downsampled list from buckets
                 let mut downsampled = Vec::new();
-                for bucket_opt in buckets {
-                    if let Some((min_pt, max_pt)) = bucket_opt {
-                        // Add points in time order to maintain waveform shape
-                        if min_pt[0] < max_pt[0] {
-                            downsampled.push(min_pt);
-                            downsampled.push(max_pt);
-                        } else {
-                            downsampled.push(max_pt);
-                            downsampled.push(min_pt);
-                        }
+                for (min_pt, max_pt) in buckets.into_iter().flatten() {
+                    // Add points in time order to maintain waveform shape
+                    if min_pt[0] < max_pt[0] {
+                        downsampled.push(min_pt);
+                        downsampled.push(max_pt);
+                    } else {
+                        downsampled.push(max_pt);
+                        downsampled.push(min_pt);
                     }
                 }
 
@@ -1292,7 +1331,7 @@ fn build_zoomed_widgets_data(
                 .unwrap_or_else(|| format!("Channel {}", channel_idx));
 
             let series = Series::line_only(filtered_positions, LineStyle::Solid)
-                .with_label(format!("{}", ch_name))
+                .with_label(ch_name)
                 .with_color(color);
 
             let unit = channel_units
@@ -1417,7 +1456,7 @@ pub fn moving_std(data: &[f32], window_size: usize) -> Vec<f32> {
 
     let mut out = vec![0.0_f32; n];
     for i in 0..n {
-        let start = if i + 1 >= window_size { i + 1 - window_size } else { 0 };
+        let start = (i + 1).saturating_sub(window_size);
         let end = i + 1;
         let len = (end - start) as f64;
         let sum = prefix_sum[end] - prefix_sum[start];
@@ -1426,6 +1465,28 @@ pub fn moving_std(data: &[f32], window_size: usize) -> Vec<f32> {
         let var = (sumsq / len) - (mean * mean);
         out[i] = if var > 0.0 { var.sqrt() as f32 } else { 0.0 };
     }
+    out
+}
+
+fn smooth_fft_magnitude(points: &[[f64; 2]], window_size: usize) -> Vec<[f64; 2]> {
+    if points.is_empty() || window_size <= 1 {
+        return points.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(points.len());
+    let half = window_size / 2;
+
+    for i in 0..points.len() {
+        let start = i.saturating_sub(half);
+        let end = (i + half + 1).min(points.len());
+        let mut sum = 0.0_f64;
+        for point in points.iter().take(end).skip(start) {
+            sum += point[1];
+        }
+        let avg = sum / (end - start) as f64;
+        out.push([points[i][0], avg]);
+    }
+
     out
 }
 
@@ -1520,6 +1581,7 @@ fn build_analysis_plot(
     analysis_type: AnalysisType,
     custom_sine_waves: &[(f64, f64, f64)],
     fft_on_peaks: bool,
+    fft_smoothing: bool,
 ) -> PlotWidget {
     // Build signal data
     let signal_points: Vec<[f64; 2]> = channel_data
@@ -1580,15 +1642,13 @@ fn build_analysis_plot(
         }
 
         let mut downsampled = Vec::new();
-        for bucket_opt in buckets {
-            if let Some((min_pt, max_pt)) = bucket_opt {
-                if min_pt[0] < max_pt[0] {
-                    downsampled.push(min_pt);
-                    downsampled.push(max_pt);
-                } else {
-                    downsampled.push(max_pt);
-                    downsampled.push(min_pt);
-                }
+        for (min_pt, max_pt) in buckets.into_iter().flatten() {
+            if min_pt[0] < max_pt[0] {
+                downsampled.push(min_pt);
+                downsampled.push(max_pt);
+            } else {
+                downsampled.push(max_pt);
+                downsampled.push(min_pt);
             }
         }
 
@@ -1596,7 +1656,7 @@ fn build_analysis_plot(
     }
 
     let signal_series = Series::line_only(filtered_positions.clone(), LineStyle::Solid)
-        .with_label(format!("{}", channel_name))
+        .with_label(channel_name.to_string())
         .with_color(Color::from_rgb(0.3, 0.3, 0.9));
 
     // Build plot with signal
@@ -1604,10 +1664,13 @@ fn build_analysis_plot(
 
     // Filter and add peaks only if PeakDetection analysis type
     if matches!(analysis_type, AnalysisType::PeakDetection) {
-        let start_idx = (time_offset * sample_rate).floor() as usize;
-        let end_idx = ((time_offset + view_duration) * sample_rate).ceil() as usize;
-        let peaks = detect_peaks_simple(&channel_data[start_idx..end_idx], sample_rate);
-        let filtered_peaks: Vec<[f64; 2]> = peaks.iter().filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max).copied().collect();
+        // Detect on full channel so peak timing stays in absolute time, then filter to visible window.
+        let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+        let filtered_peaks: Vec<[f64; 2]> = all_peaks
+            .iter()
+            .filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max)
+            .copied()
+            .collect();
 
         if !filtered_peaks.is_empty() {
             let mut peak_markers: Vec<[f64; 2]> = Vec::new();
@@ -1632,10 +1695,27 @@ fn build_analysis_plot(
         let end_idx = end_idx.min(channel_data.len());
 
         // Determine which data to use for FFT
+        let mut peak_effective_sample_rate = sample_rate;
         let fft_data: Vec<f32> = if fft_on_peaks {
-            // Use detected peaks instead of raw signal
-            let peaks = detect_peaks_simple(&channel_data[start_idx..end_idx], sample_rate);
-            peaks.iter().map(|p| p[1] as f32).collect()
+            // Detect peaks in full signal and filter by current visible window.
+            // This preserves absolute peak timing and gives more stable effective sampling.
+            let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+            let visible_peaks: Vec<[f64; 2]> = all_peaks
+                .iter()
+                .filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max)
+                .copied()
+                .collect();
+
+            if visible_peaks.len() >= 2 {
+                let first_t = visible_peaks.first().map(|p| p[0]).unwrap_or(time_offset);
+                let last_t = visible_peaks.last().map(|p| p[0]).unwrap_or(zoomed_x_max);
+                let span = (last_t - first_t).max(1e-9);
+                peak_effective_sample_rate = (visible_peaks.len() - 1) as f64 / span;
+            } else if view_duration > 0.0 {
+                peak_effective_sample_rate = (visible_peaks.len().max(1) as f64) / view_duration;
+            }
+
+            visible_peaks.iter().map(|p| p[1] as f32).collect()
         } else {
             // Use raw signal data
             channel_data[start_idx..end_idx].to_vec()
@@ -1643,7 +1723,7 @@ fn build_analysis_plot(
 
         let n = fft_data.len();
 
-        if n == 0 {
+        if n == 0 || (fft_on_peaks && n < 4) {
             // Fallthrough: no data to FFT
         } else {
             // First, remove DC offset by subtracting the mean
@@ -1679,16 +1759,17 @@ fn build_analysis_plot(
             let mut fft_markers: Vec<[f64; 2]> = Vec::with_capacity(half);
             // Now we can safely include all frequency bins including 0 Hz (DC will be minimal)
             for i in 0..half {
-                // When FFT is on peaks, frequency resolution depends on the number of peaks
-                // Effective sample rate for peaks = n_peaks / view_duration
-                // Frequency = bin * (effective_sample_rate) / fft_len
                 let freq = if fft_on_peaks {
-                    i as f64 * (n as f64) / (view_duration * fft_len as f64)
+                    i as f64 * peak_effective_sample_rate / fft_len as f64
                 } else {
                     i as f64 * sample_rate / fft_len as f64
                 };
                 let mag = buffer[i].norm() * scale;
                 fft_markers.push([freq, mag]);
+            }
+
+            if fft_smoothing && fft_markers.len() >= 5 {
+                fft_markers = smooth_fft_magnitude(&fft_markers, 5);
             }
 
             if !fft_markers.is_empty() {
@@ -1795,10 +1876,10 @@ fn build_reconstruction_plot(
 
     // Generate combined sine wave by summing all components
     let mut reconstruction: Vec<f64> = vec![0.0; num_samples];
-    for &(freq, amp, _phase) in custom_sine_waves.iter() {
+    for &(freq, amp, phase) in custom_sine_waves.iter() {
         for i in 0..num_samples {
             let time = time_offset + (i as f64) / sample_rate;
-            let sample = amp * (2.0 * std::f64::consts::PI * freq * time).sin();
+            let sample = amp * (2.0 * std::f64::consts::PI * freq * time + phase).sin();
             reconstruction[i] += sample;
         }
     }
@@ -1895,8 +1976,11 @@ fn build_reconstruction_plot_with_offset(
         for i in 0..num_samples {
             let time = time_offset + (i as f64) / sample_rate;
             let sample = amp * (2.0 * std::f64::consts::PI * freq * time + phase).sin();
-            reconstruction[i] += sample + (sine_offset as f64);
+            reconstruction[i] += sample;
         }
+    }
+    for value in reconstruction.iter_mut() {
+        *value += sine_offset as f64;
     }
 
     let mut builder = PlotWidgetBuilder::new();
