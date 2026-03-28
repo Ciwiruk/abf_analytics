@@ -66,8 +66,13 @@ enum Message {
 
 enum Screen {
     Selecting,
-    Viewing { widgets: Vec<iced_plot::PlotWidget> },
-    Analytics { widgets: Vec<PlotWidget>, analysis_type: AnalysisType },
+    Viewing {
+        widgets: Vec<iced_plot::PlotWidget>,
+    },
+    Analytics {
+        plots: Vec<(PlotWidget, Vec<(f64, f64)>)>, // (widget, [(frequency, magnitude)])
+        analysis_type: AnalysisType,
+    },
 }
 
 struct AbfAnalytics {
@@ -174,12 +179,12 @@ impl AbfAnalytics {
                         );
                     }
                     // Update widgets if in Analytics
-                    else if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    else if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                         // Rebuild widgets for all selected channels
-                        let mut new_widgets = Vec::new();
+                        let mut new_plots = Vec::new();
                         for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                             if selected {
-                                let widget = build_analysis_plot(
+                                let plot = build_analysis_plot(
                                     &self.channels[ch_idx],
                                     &self.channel_names[ch_idx],
                                     &self.channel_units[ch_idx],
@@ -192,10 +197,10 @@ impl AbfAnalytics {
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
                                 );
-                                new_widgets.push(widget);
+                                new_plots.push(plot);
                             }
                         }
-                        *widgets = new_widgets;
+                        *plots = new_plots;
                     }
                 }
             }
@@ -260,11 +265,11 @@ impl AbfAnalytics {
                     );
                 }
                 // Rebuild widgets if in Analytics
-                else if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
-                    let mut new_widgets = Vec::new();
+                else if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
+                    let mut new_plots = Vec::new();
                     for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                         if selected {
-                            let widget = build_analysis_plot(
+                            let plot = build_analysis_plot(
                                 &self.channels[ch_idx],
                                 &self.channel_names[ch_idx],
                                 &self.channel_units[ch_idx],
@@ -277,10 +282,10 @@ impl AbfAnalytics {
                                 self.fft_on_peaks,
                                 self.fft_smoothing,
                             );
-                            new_widgets.push(widget);
+                            new_plots.push(plot);
                         }
                     }
-                    *widgets = new_widgets;
+                    *plots = new_plots;
                 }
             }
             Message::CancelChannelSelection => {
@@ -364,11 +369,11 @@ impl AbfAnalytics {
                                 &self.x_axis_link,
                             );
                         }
-                        Screen::Analytics { widgets, analysis_type } => {
-                            let mut new_widgets = Vec::new();
+                        Screen::Analytics { plots, analysis_type } => {
+                            let mut new_plots = Vec::new();
                             for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                                 if selected {
-                                    let widget = build_analysis_plot(
+                                    let plot = build_analysis_plot(
                                         &self.channels[ch_idx],
                                         &self.channel_names[ch_idx],
                                         &self.channel_units[ch_idx],
@@ -381,10 +386,10 @@ impl AbfAnalytics {
                                         self.fft_on_peaks,
                                         self.fft_smoothing,
                                     );
-                                    new_widgets.push(widget);
+                                    new_plots.push(plot);
                                 }
                             }
-                            *widgets = new_widgets;
+                            *plots = new_plots;
                         }
                         _ => {}
                     }
@@ -395,8 +400,8 @@ impl AbfAnalytics {
                     if let Some(widget) = widgets.get_mut(idx) {
                         widget.update(plot_msg);
                     }
-                } else if let Screen::Analytics { widgets, .. } = &mut self.screen {
-                    if let Some(widget) = widgets.get_mut(idx) {
+                } else if let Screen::Analytics { plots, .. } = &mut self.screen {
+                    if let Some((widget, _)) = plots.get_mut(idx) {
                         widget.update(plot_msg);
                     }
                 }
@@ -407,10 +412,10 @@ impl AbfAnalytics {
                 self.x_axis_link = AxisLink::new();
 
                 // Build analysis plots for all selected channels
-                let mut widgets = Vec::new();
+                let mut plots = Vec::new();
                 for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                     if selected {
-                        let widget = build_analysis_plot(
+                        let plot = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
@@ -423,7 +428,7 @@ impl AbfAnalytics {
                             self.fft_on_peaks,
                             self.fft_smoothing,
                         );
-                        widgets.push(widget);
+                        plots.push(plot);
                     }
                 }
 
@@ -433,7 +438,7 @@ impl AbfAnalytics {
                 self.time_offset = 0.0;
                 self.show_channel_selector = false;
 
-                self.screen = Screen::Analytics { widgets, analysis_type };
+                self.screen = Screen::Analytics { plots, analysis_type };
             }
             Message::SwitchToViewing => {
                 let default_view = 5.0_f64.min(self.total_duration);
@@ -458,9 +463,9 @@ impl AbfAnalytics {
                 self.screen = Screen::Viewing { widgets };
             }
             Message::DetectPeaks => {
-                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                     // Rebuild all analysis plots
-                    let mut new_widgets = Vec::new();
+                    let mut new_plots = Vec::new();
                     let mut ch_idx_vec = Vec::new();
                     for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                         if selected {
@@ -469,7 +474,7 @@ impl AbfAnalytics {
                     }
 
                     for ch_idx in ch_idx_vec {
-                        let widget = build_analysis_plot(
+                        let plot = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
@@ -482,16 +487,16 @@ impl AbfAnalytics {
                             self.fft_on_peaks,
                             self.fft_smoothing,
                         );
-                        new_widgets.push(widget);
+                        new_plots.push(plot);
                     }
-                    *widgets = new_widgets;
+                    *plots = new_plots;
                 }
             }
             Message::SelectAnalysisType(atype) => {
-                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                     *analysis_type = atype;
                     // Rebuild all analysis plots with new analysis type
-                    let mut new_widgets = Vec::new();
+                    let mut new_plots = Vec::new();
                     let mut ch_idx_vec = Vec::new();
                     for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                         if selected {
@@ -500,7 +505,7 @@ impl AbfAnalytics {
                     }
 
                     for ch_idx in ch_idx_vec {
-                        let widget = build_analysis_plot(
+                        let plot = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
@@ -513,9 +518,9 @@ impl AbfAnalytics {
                             self.fft_on_peaks,
                             self.fft_smoothing,
                         );
-                        new_widgets.push(widget);
+                        new_plots.push(plot);
                     }
-                    *widgets = new_widgets;
+                    *plots = new_plots;
                 }
             }
             Message::ToggleCustomSineWaves => {
@@ -550,12 +555,12 @@ impl AbfAnalytics {
                 } else {
                     self.reconstruction_widget = None;
                 }
-                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                     if *analysis_type == AnalysisType::FourierTransform {
-                        let mut new_widgets = Vec::new();
+                        let mut new_plots = Vec::new();
                         for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                             if selected {
-                                let widget = build_analysis_plot(
+                                let plot = build_analysis_plot(
                                     &self.channels[ch_idx],
                                     &self.channel_names[ch_idx],
                                     &self.channel_units[ch_idx],
@@ -568,10 +573,10 @@ impl AbfAnalytics {
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
                                 );
-                                new_widgets.push(widget);
+                                new_plots.push(plot);
                             }
                         }
-                        *widgets = new_widgets;
+                        *plots = new_plots;
                     }
                 }
             }
@@ -623,12 +628,12 @@ impl AbfAnalytics {
                             }
                         }
                         // Trigger FFT plots to redraw with new sine wave
-                        if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                        if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                             if *analysis_type == AnalysisType::FourierTransform {
-                                let mut new_widgets = Vec::new();
+                                let mut new_plots = Vec::new();
                                 for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                                     if selected {
-                                        let widget = build_analysis_plot(
+                                        let plot = build_analysis_plot(
                                             &self.channels[ch_idx],
                                             &self.channel_names[ch_idx],
                                             &self.channel_units[ch_idx],
@@ -641,10 +646,10 @@ impl AbfAnalytics {
                                             self.fft_on_peaks,
                                             self.fft_smoothing,
                                         );
-                                        new_widgets.push(widget);
+                                        new_plots.push(plot);
                                     }
                                 }
-                                *widgets = new_widgets;
+                                *plots = new_plots;
                             }
                         }
                     }
@@ -669,12 +674,12 @@ impl AbfAnalytics {
                         }
                     }
                     // Trigger FFT plots to redraw
-                    if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                         if *analysis_type == AnalysisType::FourierTransform {
-                            let mut new_widgets = Vec::new();
+                            let mut new_plots = Vec::new();
                             for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                                 if selected {
-                                    let widget = build_analysis_plot(
+                                    let plot = build_analysis_plot(
                                         &self.channels[ch_idx],
                                         &self.channel_names[ch_idx],
                                         &self.channel_units[ch_idx],
@@ -687,10 +692,10 @@ impl AbfAnalytics {
                                         self.fft_on_peaks,
                                         self.fft_smoothing,
                                     );
-                                    new_widgets.push(widget);
+                                    new_plots.push(plot);
                                 }
                             }
-                            *widgets = new_widgets;
+                            *plots = new_plots;
                         }
                     }
                 }
@@ -720,12 +725,12 @@ impl AbfAnalytics {
             Message::ToggleFFTOnPeaks => {
                 self.fft_on_peaks = !self.fft_on_peaks;
                 // Trigger FFT plots to redraw and rebuild reconstruction widget
-                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                     if *analysis_type == AnalysisType::FourierTransform {
-                        let mut new_widgets = Vec::new();
+                        let mut new_plots = Vec::new();
                         for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                             if selected {
-                                let widget = build_analysis_plot(
+                                let plot = build_analysis_plot(
                                     &self.channels[ch_idx],
                                     &self.channel_names[ch_idx],
                                     &self.channel_units[ch_idx],
@@ -738,10 +743,10 @@ impl AbfAnalytics {
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
                                 );
-                                new_widgets.push(widget);
+                                new_plots.push(plot);
                             }
                         }
-                        *widgets = new_widgets;
+                        *plots = new_plots;
                     }
                 }
                 // Also rebuild reconstruction widget if it exists
@@ -761,12 +766,12 @@ impl AbfAnalytics {
             }
             Message::ToggleFFTSmoothing => {
                 self.fft_smoothing = !self.fft_smoothing;
-                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                if let Screen::Analytics { plots, analysis_type } = &mut self.screen {
                     if *analysis_type == AnalysisType::FourierTransform {
-                        let mut new_widgets = Vec::new();
+                        let mut new_plots = Vec::new();
                         for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                             if selected {
-                                let widget = build_analysis_plot(
+                                let plot = build_analysis_plot(
                                     &self.channels[ch_idx],
                                     &self.channel_names[ch_idx],
                                     &self.channel_units[ch_idx],
@@ -779,10 +784,10 @@ impl AbfAnalytics {
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
                                 );
-                                new_widgets.push(widget);
+                                new_plots.push(plot);
                             }
                         }
-                        *widgets = new_widgets;
+                        *plots = new_plots;
                     }
                 }
             }
@@ -903,16 +908,21 @@ impl AbfAnalytics {
 
             // Plots
             let mut plots_col = column![].spacing(2);
-            for (index, widget) in widgets.iter().enumerate() {
-                let plot = widget.view().map(move |msg| Message::PlotMessage(index, msg));
-                let ch_label = text(format!("Channel {index}")).size(12);
-                let row_layout = row![
-                    container(ch_label).width(60).padding(5),
-                    container(plot).height(self.graph_height).width(Fill)
-                ]
-                .spacing(0)
-                .width(Fill);
-                plots_col = plots_col.push(row_layout);
+            let mut widget_idx = 0;
+            for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                if selected && widget_idx < widgets.len() {
+                    let widget = &widgets[widget_idx];
+                    let plot = widget.view().map(move |msg| Message::PlotMessage(widget_idx, msg));
+                    let ch_label = text(format!("Channel {} ({})", ch_idx, &self.channel_names[ch_idx])).size(12);
+                    let row_layout = row![
+                        container(ch_label).width(120).padding(5),
+                        container(plot).height(self.graph_height).width(Fill)
+                    ]
+                    .spacing(0)
+                    .width(Fill);
+                    plots_col = plots_col.push(row_layout);
+                    widget_idx += 1;
+                }
             }
 
             // Channel selector popup overlay
@@ -934,7 +944,7 @@ impl AbfAnalytics {
     }
 
     fn view_analytics(&self) -> Element<'_, Message> {
-        if let Screen::Analytics { widgets, analysis_type } = &self.screen {
+        if let Screen::Analytics { plots, analysis_type } = &self.screen {
             let selected_count = self.channel_selected.iter().filter(|&&b| b).count();
 
             let mut controls = self
@@ -1078,7 +1088,7 @@ impl AbfAnalytics {
             // Height slider
             let height_control = row![
                 text("Graph Height:").size(11).width(90),
-                slider(50.0..=300.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
+                slider(50.0..=500.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
                 text(format!("{:.0}px", self.graph_height)).size(11).width(50),
             ]
             .spacing(10)
@@ -1089,8 +1099,8 @@ impl AbfAnalytics {
             let mut plots_col = column![].spacing(2);
             let mut ch_idx = 0;
             for (index, &selected) in self.channel_selected.iter().enumerate() {
-                if selected && ch_idx < widgets.len() {
-                    let widget = &widgets[ch_idx];
+                if selected && ch_idx < plots.len() {
+                    let (widget, peaks) = &plots[ch_idx];
                     let plot = widget.view().map(move |msg| Message::PlotMessage(ch_idx, msg));
                     let ch_label = text(format!("Channel {}", index)).size(12);
                     let row_layout = row![
@@ -1100,6 +1110,22 @@ impl AbfAnalytics {
                     .spacing(0)
                     .width(Fill);
                     plots_col = plots_col.push(row_layout);
+
+                    // Display FFT peaks if we're in Fourier Transform mode and have peaks
+                    if matches!(*analysis_type, AnalysisType::FourierTransform) && !peaks.is_empty() {
+                        let mut peaks_text = String::from("Peaks: ");
+                        for (i, (freq, mag)) in peaks.iter().enumerate() {
+                            if i > 0 {
+                                peaks_text.push_str(" | ");
+                            }
+                            peaks_text.push_str(&format!("{:.2}Hz({:.2})", freq, mag));
+                        }
+                        let peaks_row = row![space().width(60), container(text(peaks_text).size(9)).width(Fill).padding(4)]
+                            .spacing(0)
+                            .width(Fill);
+                        plots_col = plots_col.push(peaks_row);
+                    }
+
                     ch_idx += 1;
                 }
             }
@@ -1570,6 +1596,53 @@ pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
     peaks
 }
 
+// Specialized peak detection for FFT magnitude spectra
+fn detect_fft_peaks(fft_markers: &[[f64; 2]]) -> Vec<(f64, f64)> {
+    if fft_markers.len() < 3 {
+        return Vec::new();
+    }
+
+    // Extract magnitudes
+    let magnitudes: Vec<f64> = fft_markers.iter().map(|p| p[1]).collect();
+
+    // Calculate mean and std of magnitudes
+    let mean_mag = magnitudes.iter().sum::<f64>() / magnitudes.len() as f64;
+    let variance = magnitudes.iter().map(|&m| (m - mean_mag).powi(2)).sum::<f64>() / magnitudes.len() as f64;
+    let std_mag = variance.sqrt();
+
+    // Threshold: mean + 1.5 * std (adaptive based on spectrum characteristics)
+    let threshold = mean_mag + 1.5 * std_mag;
+
+    // Find local maxima that exceed threshold
+    let mut peaks: Vec<(f64, f64)> = Vec::new();
+    let mut last_peak_freq = -1.0;
+    let min_freq_distance = 0.01; // Minimum frequency separation between peaks (Hz)
+
+    for i in 1..magnitudes.len() - 1 {
+        let is_local_max = magnitudes[i] > magnitudes[i - 1] && magnitudes[i] > magnitudes[i + 1] && magnitudes[i] >= threshold;
+
+        if is_local_max {
+            let freq = fft_markers[i][0];
+            let mag = fft_markers[i][1];
+
+            // Apply minimum frequency distance constraint
+            if freq - last_peak_freq >= min_freq_distance {
+                peaks.push((freq, mag));
+                last_peak_freq = freq;
+            } else if !peaks.is_empty() {
+                // Replace last peak if current is higher
+                if mag > peaks.last().unwrap().1 {
+                    peaks.pop();
+                    peaks.push((freq, mag));
+                    last_peak_freq = freq;
+                }
+            }
+        }
+    }
+
+    peaks
+}
+
 fn build_analysis_plot(
     channel_data: &[f32],
     channel_name: &str,
@@ -1582,7 +1655,7 @@ fn build_analysis_plot(
     custom_sine_waves: &[(f64, f64, f64)],
     fft_on_peaks: bool,
     fft_smoothing: bool,
-) -> PlotWidget {
+) -> (PlotWidget, Vec<(f64, f64)>) {
     // Build signal data
     let signal_points: Vec<[f64; 2]> = channel_data
         .iter()
@@ -1594,12 +1667,15 @@ fn build_analysis_plot(
         .collect();
 
     if signal_points.is_empty() {
-        return PlotWidgetBuilder::new()
-            .with_cursor_overlay(true)
-            .with_x_label("Time (s)")
-            .with_y_label(channel_unit)
-            .build()
-            .expect("Failed to build analysis plot");
+        return (
+            PlotWidgetBuilder::new()
+                .with_cursor_overlay(true)
+                .with_x_label("Time (s)")
+                .with_y_label(channel_unit)
+                .build()
+                .expect("Failed to build analysis plot"),
+            Vec::new(),
+        );
     }
 
     // Filter to visible region
@@ -1823,7 +1899,11 @@ fn build_analysis_plot(
                     builder = builder.add_series(series);
                 }
 
-                return builder.build().expect("Failed to build FFT plot");
+                // Extract peaks from FFT using specialized FFT peak detection algorithm
+                let peak_list = detect_fft_peaks(&fft_markers);
+
+                let widget = builder.build().expect("Failed to build FFT plot");
+                return (widget, peak_list);
             }
         }
     }
@@ -1835,7 +1915,7 @@ fn build_analysis_plot(
     let y_range = y_max - y_min;
     let padding = if y_range > 0.0 { y_range * 0.1 } else { 0.5 };
 
-    builder
+    let widget = builder
         .with_cursor_overlay(true)
         .with_x_label("Time (s)")
         .with_x_axis_link(x_axis_link.clone())
@@ -1845,7 +1925,9 @@ fn build_analysis_plot(
         .disable_legend()
         .disable_controls_help()
         .build()
-        .expect("Failed to build analysis plot")
+        .expect("Failed to build analysis plot");
+
+    (widget, Vec::new())
 }
 
 #[allow(dead_code)]
