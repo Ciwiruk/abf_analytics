@@ -1,8 +1,8 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use abf_reader::AbfReader;
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_input};
-use iced::{Element, Length};
+use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
+use iced::{Center, Element, Fill};
 use iced_plot::{AxisLink, Color, LineStyle, PlotUiMessage, PlotWidget, PlotWidgetBuilder, Series};
 use std::path::Path;
 
@@ -31,6 +31,7 @@ impl std::fmt::Display for AnalysisType {
 enum Message {
     ToggleChannel(usize),
     ConfirmSelection,
+    ToggleChannelSelector,
     ResetZoom,
     PanLeft,
     PanRight,
@@ -44,486 +45,545 @@ enum Message {
     SelectAnalysisType(AnalysisType),
 }
 
-enum AppState {
-    Selecting {
-        channel_selected: [bool; 9],
-    },
-    #[allow(dead_code)]
+enum Screen {
+    Selecting,
     Viewing {
         widgets: Vec<iced_plot::PlotWidget>,
-        channels: Vec<Vec<f32>>,
-        channel_selected: [bool; 9],
-        sample_rate: f64,
-        channel_names: Vec<String>,
-        channel_units: Vec<String>,
-        total_duration: f64,
-        view_duration: f64,
-        time_offset: f64,
-        position_input: String,
-        view_window_input: String,
-        x_axis_link: AxisLink,
     },
-    #[allow(dead_code)]
     Analytics {
         widget: PlotWidget,
-        channels: Vec<Vec<f32>>,
-        channel_selected: [bool; 9],
-        sample_rate: f64,
-        channel_names: Vec<String>,
-        channel_units: Vec<String>,
         selected_channel: usize,
         analysis_type: AnalysisType,
         analysis_peaks: Vec<[f64; 2]>,
-        x_axis_link: AxisLink,
-        total_duration: f64,
-        view_duration: f64,
-        time_offset: f64,
-        position_input: String,
-        view_window_input: String,
     },
 }
 
+struct AbfAnalytics {
+    // Shared state across all screens
+    channels: Vec<Vec<f32>>,
+    channel_selected: [bool; 9],
+    sample_rate: f64,
+    channel_names: Vec<String>,
+    channel_units: Vec<String>,
+    total_duration: f64,
+    position_input: String,
+    view_window_input: String,
+
+    // View/Analytics shared state
+    time_offset: f64,
+    view_duration: f64,
+    x_axis_link: AxisLink,
+    show_channel_selector: bool,
+
+    // Current screen state
+    screen: Screen,
+}
+
 fn main() -> iced::Result {
-    iced::application(app_new, app_update, app_view).window_size((1200.0, 1400.0)).run()
+    iced::application(AbfAnalytics::new, AbfAnalytics::update, AbfAnalytics::view)
+        .window_size((1400.0, 900.0))
+        .run()
 }
 
-fn app_new() -> AppState {
-    AppState::Selecting { channel_selected: [true; 9] }
-}
+impl AbfAnalytics {
+    fn new() -> Self {
+        AbfAnalytics {
+            channels: Vec::new(),
+            channel_selected: [true; 9],
+            sample_rate: 1.0,
+            channel_names: Vec::new(),
+            channel_units: Vec::new(),
+            total_duration: 0.0,
+            position_input: "0.0".to_string(),
+            view_window_input: "5.0".to_string(),
+            time_offset: 0.0,
+            view_duration: 5.0,
+            x_axis_link: AxisLink::new(),
+            show_channel_selector: false,
+            screen: Screen::Selecting,
+        }
+    }
 
-fn app_update(state: &mut AppState, message: Message) {
-    match state {
-        AppState::Selecting { channel_selected } => match message {
+    fn update(&mut self, message: Message) {
+        match message {
             Message::ToggleChannel(idx) => {
                 if idx < 9 {
-                    channel_selected[idx] = !channel_selected[idx];
+                    self.channel_selected[idx] = !self.channel_selected[idx];
+
+                    // Rebuild widgets if in Viewing
+                    if let Screen::Viewing { widgets } = &mut self.screen {
+                        *widgets = build_zoomed_widgets_data(
+                            &self.channels,
+                            &self.channel_selected,
+                            self.sample_rate,
+                            &self.channel_names,
+                            &self.channel_units,
+                            self.view_duration,
+                            self.time_offset,
+                            &self.x_axis_link,
+                        );
+                    }
+                    // Update widget if in Analytics
+                    else if let Screen::Analytics {
+                        widget,
+                        selected_channel,
+                        analysis_peaks,
+                        analysis_type,
+                    } = &mut self.screen
+                    {
+                        // If selected channel was deselected, pick new one
+                        if !self.channel_selected[*selected_channel] {
+                            if let Some(next) = self.channel_selected.iter().position(|&b| b) {
+                                *selected_channel = next;
+                            }
+                        }
+                        *widget = build_analysis_plot(
+                            &self.channels[*selected_channel],
+                            &self.channel_names[*selected_channel],
+                            &self.channel_units[*selected_channel],
+                            analysis_peaks,
+                            self.sample_rate,
+                            self.view_duration,
+                            self.time_offset,
+                            &self.x_axis_link,
+                            *analysis_type,
+                        );
+                    }
                 }
             }
             Message::ConfirmSelection => {
-                let (channels, sample_rate, channel_names, channel_units, total_duration) = read_channel_data(*channel_selected, 0.0, f64::INFINITY);
-                // Default view to 5 seconds or full duration if shorter
+                let (channels, sample_rate, channel_names, channel_units, total_duration) =
+                    read_channel_data(self.channel_selected, 0.0, f64::INFINITY);
+
+                self.channels = channels;
+                self.sample_rate = sample_rate;
+                self.channel_names = channel_names.clone();
+                self.channel_units = channel_units.clone();
+                self.total_duration = total_duration;
+                self.position_input = "0.0".to_string();
+
                 let default_view = 5.0_f64.min(total_duration);
-                let x_axis_link = AxisLink::new();
+                self.view_window_input = format!("{:.1}", default_view);
+                self.view_duration = default_view;
+                self.time_offset = 0.0;
+                self.x_axis_link = AxisLink::new();
+                self.show_channel_selector = false;
+
                 let widgets = build_zoomed_widgets_data(
-                    &channels,
-                    channel_selected,
-                    sample_rate,
-                    &channel_names,
-                    &channel_units,
+                    &self.channels,
+                    &self.channel_selected,
+                    self.sample_rate,
+                    &self.channel_names,
+                    &self.channel_units,
                     default_view,
                     0.0,
-                    &x_axis_link,
+                    &self.x_axis_link,
                 );
-                *state = AppState::Viewing {
-                    widgets,
-                    channels,
-                    channel_selected: *channel_selected,
-                    sample_rate,
-                    channel_names,
-                    channel_units,
-                    total_duration,
-                    view_duration: default_view,
-                    time_offset: 0.0,
-                    position_input: "0.0".to_string(),
-                    view_window_input: format!("{:.1}", default_view),
-                    x_axis_link,
-                };
+
+                self.screen = Screen::Viewing { widgets };
             }
-            _ => {}
-        },
-        AppState::Viewing {
-            widgets,
-            channels,
-            channel_selected,
-            sample_rate,
-            channel_names,
-            channel_units,
-            total_duration,
-            view_duration,
-            time_offset,
-            position_input,
-            view_window_input,
-            x_axis_link,
-        } => match message {
+            Message::ToggleChannelSelector => {
+                self.show_channel_selector = !self.show_channel_selector;
+            }
             Message::ResetZoom => {
-                *position_input = "0.0".to_string();
-                *view_window_input = format!("{:.1}", view_duration);
-                *widgets = build_zoomed_widgets_data(
-                    channels,
-                    channel_selected,
-                    *sample_rate,
-                    channel_names,
-                    channel_units,
-                    *view_duration,
-                    *time_offset,
-                    x_axis_link,
-                );
+                if let Screen::Viewing { widgets } = &mut self.screen {
+                    self.position_input = "0.0".to_string();
+                    self.view_window_input = format!("{:.1}", self.view_duration);
+                    self.time_offset = 0.0;
+                    *widgets = build_zoomed_widgets_data(
+                        &self.channels,
+                        &self.channel_selected,
+                        self.sample_rate,
+                        &self.channel_names,
+                        &self.channel_units,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
+                    );
+                }
             }
             Message::PanLeft => {
-                *time_offset = (*time_offset - *view_duration / 4.0).max(0.0);
-                *position_input = format!("{:.1}", time_offset);
-                *widgets = build_zoomed_widgets_data(
-                    channels,
-                    channel_selected,
-                    *sample_rate,
-                    channel_names,
-                    channel_units,
-                    *view_duration,
-                    *time_offset,
-                    x_axis_link,
-                );
+                if let Screen::Viewing { widgets } = &mut self.screen {
+                    self.time_offset = (self.time_offset - self.view_duration / 4.0).max(0.0);
+                    self.position_input = format!("{:.1}", self.time_offset);
+                    *widgets = build_zoomed_widgets_data(
+                        &self.channels,
+                        &self.channel_selected,
+                        self.sample_rate,
+                        &self.channel_names,
+                        &self.channel_units,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
+                    );
+                }
             }
             Message::PanRight => {
-                *time_offset = (*time_offset + *view_duration / 4.0).min((*total_duration - *view_duration).max(0.0));
-                *position_input = format!("{:.1}", time_offset);
-                *widgets = build_zoomed_widgets_data(
-                    channels,
-                    channel_selected,
-                    *sample_rate,
-                    channel_names,
-                    channel_units,
-                    *view_duration,
-                    *time_offset,
-                    x_axis_link,
-                );
+                if let Screen::Viewing { widgets } = &mut self.screen {
+                    self.time_offset = (self.time_offset + self.view_duration / 4.0).min((self.total_duration - self.view_duration).max(0.0));
+                    self.position_input = format!("{:.1}", self.time_offset);
+                    *widgets = build_zoomed_widgets_data(
+                        &self.channels,
+                        &self.channel_selected,
+                        self.sample_rate,
+                        &self.channel_names,
+                        &self.channel_units,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
+                    );
+                }
             }
             Message::SetPositionInput(input) => {
-                *position_input = input;
+                self.position_input = input;
             }
             Message::SetViewWindowInput(input) => {
-                *view_window_input = input;
+                self.view_window_input = input;
             }
             Message::UpdateViewSettings => {
-                let pos_result = position_input.parse::<f64>();
-                let dur_result = view_window_input.parse::<f64>();
+                if let (Ok(new_offset), Ok(new_duration)) = (self.position_input.parse::<f64>(), self.view_window_input.parse::<f64>()) {
+                    self.view_duration = new_duration.max(0.1).min(self.total_duration);
+                    self.time_offset = new_offset.max(0.0).min((self.total_duration - self.view_duration).max(0.0));
+                    self.position_input = format!("{:.1}", self.time_offset);
+                    self.view_window_input = format!("{:.1}", self.view_duration);
 
-                if let (Ok(new_offset), Ok(new_duration)) = (pos_result, dur_result) {
-                    *view_duration = new_duration.max(0.1).min(*total_duration);
-                    *time_offset = new_offset.max(0.0).min((*total_duration - *view_duration).max(0.0));
-                    *position_input = format!("{:.1}", time_offset);
-                    *view_window_input = format!("{:.1}", view_duration);
-                    *widgets = build_zoomed_widgets_data(
-                        channels,
-                        channel_selected,
-                        *sample_rate,
-                        channel_names,
-                        channel_units,
-                        *view_duration,
-                        *time_offset,
-                        x_axis_link,
-                    );
+                    match &mut self.screen {
+                        Screen::Viewing { widgets } => {
+                            *widgets = build_zoomed_widgets_data(
+                                &self.channels,
+                                &self.channel_selected,
+                                self.sample_rate,
+                                &self.channel_names,
+                                &self.channel_units,
+                                self.view_duration,
+                                self.time_offset,
+                                &self.x_axis_link,
+                            );
+                        }
+                        Screen::Analytics {
+                            widget,
+                            selected_channel,
+                            analysis_peaks,
+                            analysis_type,
+                        } => {
+                            *widget = build_analysis_plot(
+                                &self.channels[*selected_channel],
+                                &self.channel_names[*selected_channel],
+                                &self.channel_units[*selected_channel],
+                                analysis_peaks,
+                                self.sample_rate,
+                                self.view_duration,
+                                self.time_offset,
+                                &self.x_axis_link,
+                                *analysis_type,
+                            );
+                        }
+                        _ => {}
+                    }
                 }
             }
             Message::PlotMessage(idx, plot_msg) => {
-                // Only update the specific plot that was interacted with
-                if let Some(widget) = widgets.get_mut(idx) {
-                    widget.update(plot_msg);
+                if let Screen::Viewing { widgets } = &mut self.screen {
+                    if let Some(widget) = widgets.get_mut(idx) {
+                        widget.update(plot_msg);
+                    }
                 }
             }
             Message::SwitchToAnalytics => {
-                if let Some(ch_idx) = channel_selected.iter().position(|&b| b) {
-                    let start_idx = (*time_offset * *sample_rate).floor() as usize;
-                    let end_idx = ((*time_offset + *view_duration) * *sample_rate).ceil() as usize;
-                    let mut peaks = detect_peaks_simple(&channels[ch_idx][start_idx..end_idx], *sample_rate);
+                if let Some(ch_idx) = self.channel_selected.iter().position(|&b| b) {
+                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+
+                    let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
                     for p in peaks.iter_mut() {
-                        p[0] += *time_offset;
+                        p[0] += self.time_offset;
                     }
-                    let default_view = 5.0_f64.min(*total_duration);
+
+                    let default_view = 5.0_f64.min(self.total_duration);
                     let analysis_type = AnalysisType::PeakDetection;
+                    self.x_axis_link = AxisLink::new();
                     let widget = build_analysis_plot(
-                        &channels[ch_idx],
-                        &channel_names[ch_idx],
-                        &channel_units[ch_idx],
+                        &self.channels[ch_idx],
+                        &self.channel_names[ch_idx],
+                        &self.channel_units[ch_idx],
                         &peaks,
-                        *sample_rate,
+                        self.sample_rate,
                         default_view,
                         0.0,
-                        x_axis_link,
+                        &self.x_axis_link,
                         analysis_type,
                     );
-                    *state = AppState::Analytics {
+
+                    self.position_input = "0.0".to_string();
+                    self.view_window_input = format!("{:.1}", default_view);
+                    self.view_duration = default_view;
+                    self.time_offset = 0.0;
+                    self.show_channel_selector = false;
+
+                    self.screen = Screen::Analytics {
                         widget,
-                        channels: channels.clone(),
-                        channel_selected: *channel_selected,
-                        sample_rate: *sample_rate,
-                        channel_names: channel_names.clone(),
-                        channel_units: channel_units.clone(),
                         selected_channel: ch_idx,
                         analysis_type,
                         analysis_peaks: peaks,
-                        x_axis_link: x_axis_link.clone(),
-                        total_duration: *total_duration,
-                        view_duration: default_view,
-                        time_offset: 0.0,
-                        position_input: "0.0".to_string(),
-                        view_window_input: format!("{:.1}", default_view),
                     };
                 }
             }
-            _ => {}
-        },
-        AppState::Analytics {
-            widget,
-            channels,
-            channel_selected: _,
-            sample_rate,
-            channel_names,
-            channel_units,
-            selected_channel,
-            analysis_type,
-            analysis_peaks,
-            x_axis_link,
-            total_duration,
-            view_duration,
-            time_offset,
-            position_input,
-            view_window_input,
-        } => match message {
-            Message::DetectPeaks => {
-                let start_idx = (*time_offset * *sample_rate).floor() as usize;
-                let end_idx = ((*time_offset + *view_duration) * *sample_rate).ceil() as usize;
-                let mut peaks = detect_peaks_simple(&channels[*selected_channel][start_idx..end_idx], *sample_rate);
-                for p in peaks.iter_mut() {
-                    p[0] += *time_offset;
-                }
-                *analysis_peaks = peaks.clone();
-                *widget = build_analysis_plot(
-                    &channels[*selected_channel],
-                    &channel_names[*selected_channel],
-                    &channel_units[*selected_channel],
-                    &peaks,
-                    *sample_rate,
-                    *view_duration,
-                    *time_offset,
-                    x_axis_link,
-                    *analysis_type,
+            Message::SwitchToViewing => {
+                let default_view = 5.0_f64.min(self.total_duration);
+                self.x_axis_link = AxisLink::new();
+                let widgets = build_zoomed_widgets_data(
+                    &self.channels,
+                    &self.channel_selected,
+                    self.sample_rate,
+                    &self.channel_names,
+                    &self.channel_units,
+                    default_view,
+                    0.0,
+                    &self.x_axis_link,
                 );
-            }
-            Message::SelectAnalysisType(atype) => {
-                *analysis_type = atype;
-                *widget = build_analysis_plot(
-                    &channels[*selected_channel],
-                    &channel_names[*selected_channel],
-                    &channel_units[*selected_channel],
-                    &analysis_peaks,
-                    *sample_rate,
-                    *view_duration,
-                    *time_offset,
-                    x_axis_link,
-                    atype,
-                );
-            }
-            Message::SetPositionInput(input) => {
-                *position_input = input;
-            }
-            Message::SetViewWindowInput(input) => {
-                *view_window_input = input;
-            }
-            Message::UpdateViewSettings => {
-                let pos_result = position_input.parse::<f64>();
-                let dur_result = view_window_input.parse::<f64>();
 
-                if let (Ok(new_offset), Ok(new_duration)) = (pos_result, dur_result) {
-                    *view_duration = new_duration.max(0.1).min(*total_duration);
-                    *time_offset = new_offset.max(0.0).min((*total_duration - *view_duration).max(0.0));
-                    *position_input = format!("{:.1}", time_offset);
-                    *view_window_input = format!("{:.1}", view_duration);
+                self.position_input = "0.0".to_string();
+                self.view_window_input = format!("{:.1}", default_view);
+                self.view_duration = default_view;
+                self.time_offset = 0.0;
+                self.show_channel_selector = false;
+
+                self.screen = Screen::Viewing { widgets };
+            }
+            Message::DetectPeaks => {
+                if let Screen::Analytics {
+                    widget,
+                    selected_channel,
+                    analysis_peaks,
+                    analysis_type,
+                } = &mut self.screen
+                {
+                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                    let mut peaks = detect_peaks_simple(&self.channels[*selected_channel][start_idx..end_idx], self.sample_rate);
+                    for p in peaks.iter_mut() {
+                        p[0] += self.time_offset;
+                    }
+                    *analysis_peaks = peaks.clone();
                     *widget = build_analysis_plot(
-                        &channels[*selected_channel],
-                        &channel_names[*selected_channel],
-                        &channel_units[*selected_channel],
-                        &analysis_peaks,
-                        *sample_rate,
-                        *view_duration,
-                        *time_offset,
-                        x_axis_link,
+                        &self.channels[*selected_channel],
+                        &self.channel_names[*selected_channel],
+                        &self.channel_units[*selected_channel],
+                        analysis_peaks,
+                        self.sample_rate,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
                         *analysis_type,
                     );
                 }
             }
-            Message::PlotMessage(_, _) => {}
-            Message::SwitchToViewing => {}
-            _ => {}
-        },
+            Message::SelectAnalysisType(atype) => {
+                if let Screen::Analytics {
+                    widget,
+                    selected_channel,
+                    analysis_peaks,
+                    analysis_type: _,
+                } = &mut self.screen
+                {
+                    *widget = build_analysis_plot(
+                        &self.channels[*selected_channel],
+                        &self.channel_names[*selected_channel],
+                        &self.channel_units[*selected_channel],
+                        analysis_peaks,
+                        self.sample_rate,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
+                        atype,
+                    );
+                }
+            }
+        }
     }
-}
 
-fn app_view(state: &AppState) -> Element<'_, Message> {
-    match state {
-        AppState::Selecting { channel_selected } => selection_view(channel_selected),
-        AppState::Viewing {
-            widgets,
-            channels: _,
-            channel_selected,
-            sample_rate: _,
-            channel_names: _,
-            channel_units: _,
-            total_duration: _,
-            view_duration: _,
-            time_offset: _,
-            position_input,
-            view_window_input,
-            x_axis_link: _,
-        } => {
-            let selected_count = channel_selected.iter().filter(|&&b| b).count();
-            let base_height = if selected_count <= 2 {
-                400.0
-            } else if selected_count <= 4 {
-                300.0
-            } else if selected_count <= 6 {
-                200.0
-            } else {
-                140.0
-            };
+    fn view(&self) -> Element<'_, Message> {
+        match &self.screen {
+            Screen::Selecting => self.view_selecting(),
+            Screen::Viewing { .. } => self.view_viewing(),
+            Screen::Analytics { .. } => self.view_analytics(),
+        }
+    }
 
-            let position_row = row![
-                text("Position (s):").size(11).width(Length::Fixed(80.0)),
-                text_input("0.0", position_input)
-                    .on_input(Message::SetPositionInput)
-                    .width(Length::Fixed(80.0))
-                    .padding(5),
-            ]
-            .spacing(5);
+    fn view_selecting(&self) -> Element<'_, Message> {
+        let title = text("ABF Analytics Viewer").size(32);
 
-            let view_window_row = row![
-                text("View Window (s):").size(11).width(Length::Fixed(100.0)),
-                text_input("5.0", view_window_input)
-                    .on_input(Message::SetViewWindowInput)
-                    .width(Length::Fixed(80.0))
-                    .padding(5),
-            ]
-            .spacing(5);
+        let channels_selector = {
+            let mut col = column![text("Select Channels to Load:").size(18)].spacing(12).padding(20);
+            for (idx, selected) in self.channel_selected.iter().enumerate() {
+                let label = format!("Channel {}", idx);
+                col = col.push(checkbox(*selected).label(label).on_toggle(move |_| Message::ToggleChannel(idx)));
+            }
+            col
+        };
 
-            let control_buttons = row![
-                button("View Signals").on_press(Message::SwitchToViewing).padding(5),
-                button("◄ Pan").on_press(Message::PanLeft).padding(5),
-                button("Pan ►").on_press(Message::PanRight).padding(5),
-                button("Update").on_press(Message::UpdateViewSettings).padding(5),
-                button("Reset").on_press(Message::ResetZoom).padding(5),
-                button("Analysis").on_press(Message::SwitchToAnalytics).padding(5),
-            ]
-            .spacing(8);
+        let content = column![
+            container(title).padding(20).width(Fill),
+            scrollable(container(channels_selector).padding(10).width(Fill)).height(Fill),
+            container(button("Load Data & View Signals").on_press(Message::ConfirmSelection).padding(12))
+                .padding(20)
+                .width(Fill),
+        ]
+        .spacing(0)
+        .height(Fill);
 
-            let zoom_controls = container(column![position_row, view_window_row, control_buttons,].spacing(8))
-                .padding(10)
-                .width(Length::Fill);
+        container(content).height(Fill).width(Fill).center_x(Fill).center_y(Fill).into()
+    }
 
-            let mut plots_col = column![].spacing(0);
+    fn view_viewing(&self) -> Element<'_, Message> {
+        if let Screen::Viewing { widgets } = &self.screen {
+            let selected_count = self.channel_selected.iter().filter(|&&b| b).count();
 
+            // Control panel
+            let controls = self.build_control_panel(
+                &self.position_input,
+                &self.view_window_input,
+                false,
+                Some(selected_count),
+                self.show_channel_selector,
+            );
+
+            // Plots
+            let mut plots_col = column![].spacing(2);
             for (index, widget) in widgets.iter().enumerate() {
                 let plot = widget.view().map(move |msg| Message::PlotMessage(index, msg));
-
-                let ch_label = text(format!("Ch{}", index)).size(11);
-                let row_layout = row![
-                    container(ch_label).width(Length::Fixed(45.0)),
-                    container(plot).height(Length::Fixed(base_height as f32)).width(Length::Fill)
-                ]
-                .spacing(0)
-                .width(Length::Fill);
-
+                let ch_label = text(format!("Channel {index}")).size(12);
+                let row_layout = row![container(ch_label).width(60).padding(5), container(plot).height(140).width(Fill)]
+                    .spacing(0)
+                    .width(Fill);
                 plots_col = plots_col.push(row_layout);
             }
 
-            let header = container(column![text(format!("Loaded {} channels", selected_count)).size(14), zoom_controls,].spacing(5)).padding(10);
+            // Channel selector popup overlay
+            let content = if self.show_channel_selector {
+                column![
+                    controls,
+                    container(self.channel_selector_popup()).padding(20),
+                    scrollable(plots_col).height(Fill)
+                ]
+            } else {
+                column![controls, scrollable(plots_col).height(Fill),]
+            };
 
-            column![header, scrollable(plots_col).height(Length::Fill).width(Length::Fill)].into()
+            container(content).height(Fill).width(Fill).padding(0).into()
+        } else {
+            text("Error").into()
         }
-        AppState::Analytics {
+    }
+
+    fn view_analytics(&self) -> Element<'_, Message> {
+        if let Screen::Analytics {
             widget,
-            channels: _,
-            channel_selected: _,
-            sample_rate: _,
-            channel_names: _,
-            channel_units: _,
             selected_channel,
             analysis_type,
             analysis_peaks: _,
-            x_axis_link: _,
-            total_duration: _,
-            view_duration: _,
-            time_offset: _,
-            position_input,
-            view_window_input,
-        } => {
-            // Match Viewing tab layout exactly
-            let position_row = row![
-                text("Position (s):").size(11).width(Length::Fixed(80.0)),
-                text_input("0.0", position_input)
-                    .on_input(Message::SetPositionInput)
-                    .width(Length::Fixed(80.0))
-                    .padding(5),
-            ]
-            .spacing(5);
+        } = &self.screen
+        {
+            let controls = self
+                .build_control_panel(&self.position_input, &self.view_window_input, true, None, self.show_channel_selector)
+                .push(
+                    row![
+                        text("Analysis Type:").size(11).width(60),
+                        pick_list(AnalysisType::all(), Some(*analysis_type), Message::SelectAnalysisType,).width(Fill),
+                    ]
+                    .spacing(10)
+                    .align_y(Center),
+                );
 
-            let view_window_row = row![
-                text("View Window (s):").size(11).width(Length::Fixed(100.0)),
-                text_input("5.0", view_window_input)
-                    .on_input(Message::SetViewWindowInput)
-                    .width(Length::Fixed(80.0))
-                    .padding(5),
-            ]
-            .spacing(5);
-
-            let analysis_type_row = row![
-                text("Analysis Type:").size(11).width(Length::Fixed(90.0)),
-                pick_list(AnalysisType::all(), Some(*analysis_type), Message::SelectAnalysisType).width(Length::Fixed(120.0)),
-            ]
-            .spacing(5);
-
-            let control_buttons = row![
-                button("View Signals").on_press(Message::SwitchToViewing).padding(5),
-                button("◄ Pan").on_press(Message::PanLeft).padding(5),
-                button("Pan ►").on_press(Message::PanRight).padding(5),
-                button("Update").on_press(Message::UpdateViewSettings).padding(5),
-                button("Reset").on_press(Message::ResetZoom).padding(5),
-                button("Detect Peaks").on_press(Message::DetectPeaks).padding(5),
-            ]
-            .spacing(8);
-
-            let zoom_controls = container(column![position_row, view_window_row, analysis_type_row, control_buttons,].spacing(8))
-                .padding(10)
-                .width(Length::Fill);
-
-            // Display single channel in same format as Viewing tab
             let plot = widget.view().map(move |_msg| Message::PlotMessage(0, _msg));
+            let ch_label = text(format!("Channel {selected_channel}")).size(12);
+            let plot_section = row![container(ch_label).width(60).padding(5), container(plot).height(140).width(Fill)]
+                .spacing(0)
+                .width(Fill);
 
-            let ch_label = text(format!("Ch{}", selected_channel)).size(11);
-            let row_layout = row![
-                container(ch_label).width(Length::Fixed(45.0)),
-                container(plot).height(Length::Fixed(400.0)).width(Length::Fill)
-            ]
-            .spacing(0)
-            .width(Length::Fill);
+            let content = if self.show_channel_selector {
+                column![controls, container(self.channel_selector_popup()).padding(20), plot_section,]
+            } else {
+                column![controls, plot_section,]
+            };
 
-            let plots_col = column![row_layout].spacing(0);
-
-            let header = container(column![text("Loaded 1 channel (Analysis)").size(14), zoom_controls,].spacing(5)).padding(10);
-
-            column![header, scrollable(plots_col).height(Length::Fill).width(Length::Fill)].into()
+            container(content).height(Fill).width(Fill).padding(0).into()
+        } else {
+            text("Error").into()
         }
     }
-}
 
-fn selection_view(channel_selected: &[bool; 9]) -> Element<'_, Message> {
-    let mut channel_col = column![text("Select Channels:").size(16)].spacing(5).padding(10);
+    fn build_control_panel(
+        &self,
+        position_input: &str,
+        view_window_input: &str,
+        is_analytics: bool,
+        selected_count: Option<usize>,
+        _show_selector: bool,
+    ) -> iced::widget::Column<'static, Message> {
+        let title = if is_analytics {
+            "Analytics - Channel Analysis".to_string()
+        } else {
+            format!("Signal Viewer - {} Ch", selected_count.unwrap_or(0))
+        };
 
-    for (idx, selected) in channel_selected.iter().enumerate() {
-        let label = format!("Channel {} (ch{})", idx, idx);
-        let ch_checkbox = checkbox(*selected).label(label).on_toggle(move |_| Message::ToggleChannel(idx));
-        channel_col = channel_col.push(ch_checkbox);
+        let mut controls = column![text(title).size(20)].spacing(12).padding(15);
+
+        // Position & Window inputs in a row
+        let input_row = row![
+            column![
+                text("Position (s)").size(10),
+                text_input("0.0", position_input)
+                    .on_input(Message::SetPositionInput)
+                    .width(100)
+                    .padding(6),
+            ]
+            .spacing(4),
+            column![
+                text("Window (s)").size(10),
+                text_input("5.0", view_window_input)
+                    .on_input(Message::SetViewWindowInput)
+                    .width(100)
+                    .padding(6),
+            ]
+            .spacing(4),
+            space().width(Fill),
+        ]
+        .spacing(12)
+        .align_y(Center);
+
+        controls = controls.push(input_row);
+
+        // Action buttons
+        let mut button_row = row![
+            button("<< Pan").on_press(Message::PanLeft).padding(8),
+            button("Pan >>").on_press(Message::PanRight).padding(8),
+            button("Update").on_press(Message::UpdateViewSettings).padding(8),
+            button("Reset Zoom").on_press(Message::ResetZoom).padding(8),
+            button("Channels...").on_press(Message::ToggleChannelSelector).padding(8),
+        ]
+        .spacing(8);
+
+        if !is_analytics {
+            button_row = button_row.push(button("Analysis >>").on_press(Message::SwitchToAnalytics).padding(8));
+        } else {
+            button_row = button_row.push(button("<< Back").on_press(Message::SwitchToViewing).padding(8));
+            button_row = button_row.push(button("Detect").on_press(Message::DetectPeaks).padding(8));
+        }
+
+        controls.push(button_row)
     }
 
-    let confirm_btn = button("Load All Data and View").on_press(Message::ConfirmSelection).padding(10);
+    fn channel_selector_popup(&self) -> Element<'static, Message> {
+        let mut col = column![text("Select Channels:").size(16)].spacing(8).padding(15);
 
-    let main_col = column![
-        container(text("ABF Analytics Viewer").size(24)).padding(20).width(Length::Fill),
-        scrollable(channel_col).height(Length::Fill),
-        confirm_btn
-    ]
-    .spacing(10)
-    .padding(20);
+        for (idx, selected) in self.channel_selected.iter().enumerate() {
+            let label = format!("Channel {idx}");
+            col = col.push(checkbox(*selected).label(label).on_toggle(move |_| Message::ToggleChannel(idx)));
+        }
 
-    container(main_col).height(Length::Fill).width(Length::Fill).into()
+        col.push(button("Close").on_press(Message::ToggleChannelSelector).padding(6)).into()
+    }
 }
 
 fn build_zoomed_widgets_data(
