@@ -2,9 +2,8 @@
 
 use abf_reader::AbfReader;
 use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_input};
-use iced::{window, Element, Length};
+use iced::{Element, Length};
 use iced_plot::{AxisLink, Color, LineStyle, PlotUiMessage, PlotWidget, PlotWidgetBuilder, Series};
-use std::collections::binary_heap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -785,7 +784,7 @@ pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
     }
 
     // Local adaptive window (seconds) -> samples
-    let local_window_sec = 10.0_f64; // tune 0.2..1.0 for your data
+    let local_window_sec = 20.0_f64; // tune 0.2..1.0 for your data
     let mut local_window = ((sample_rate * local_window_sec).round() as usize).max(1);
     if local_window > data_smoothed.len() {
         local_window = data_smoothed.len();
@@ -795,7 +794,7 @@ pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
     let local_mean = moving_average(&data_smoothed, local_window);
     let local_std = moving_std(&data_smoothed, local_window);
 
-    let k = 1.75_f32; // sensitivity multiplier: lower => more detections
+    let k = 1.6666667_f32; // sensitivity multiplier: lower => more detections
 
     let min_distance_sec = 0.02; // minimum separation in seconds (tune or compute per-record)
 
@@ -831,7 +830,10 @@ pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
             let peak_time = (peak_index as f64) / sample_rate;
 
             if peak_time - last_peak_time >= min_distance_sec {
-                peaks.push([peak_time, max_val as f64]);
+                if i != 1 {
+                    peaks.push([peak_time, max_val as f64]);
+                }
+
                 last_peak_value = max_val;
                 last_peak_time = peak_time;
             } else {
