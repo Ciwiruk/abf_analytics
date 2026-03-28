@@ -2,6 +2,8 @@
 name = "abf_reader"
 version = "0.1.0"
 edition = "2024"
+description = "ABF (Axon Binary Format) v1 file format parser"
+license = "MIT"
 
 [dependencies]
 rayon = "1.11.0"

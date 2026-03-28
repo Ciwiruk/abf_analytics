@@ -1,4 +1,21 @@
+# Rust build artifacts
 /target
-Example.abf
 /abf_reader/target
+
+# Example/test data files
+Example.abf
+*.abf
+
+# Personal notes
 todo.txt
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
