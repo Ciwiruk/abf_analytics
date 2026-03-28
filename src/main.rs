@@ -10,11 +10,12 @@ use std::path::Path;
 enum AnalysisType {
     RawSignal,
     PeakDetection,
+    FourierTransform,
 }
 
 impl AnalysisType {
     fn all() -> Vec<Self> {
-        vec![AnalysisType::RawSignal, AnalysisType::PeakDetection]
+        vec![AnalysisType::RawSignal, AnalysisType::PeakDetection, AnalysisType::FourierTransform]
     }
 }
 
@@ -23,6 +24,7 @@ impl std::fmt::Display for AnalysisType {
         match self {
             AnalysisType::RawSignal => write!(f, "Raw Signal"),
             AnalysisType::PeakDetection => write!(f, "Peak Detection"),
+            AnalysisType::FourierTransform => write!(f, "Fourier Transform"),
         }
     }
 }
@@ -47,6 +49,18 @@ enum Message {
     SwitchToViewing,
     SwitchToAnalytics,
     SelectAnalysisType(AnalysisType),
+    ToggleCustomSineWaves,
+    SetCustomFrequencyInput(String),
+    SetCustomAmplitudeInput(String),
+    SetCustomPhaseInput(String),
+    AddCustomSineWave,
+    RemoveCustomSineWave(usize),
+    ToggleFFTOnPeaks,
+    OpenFileDialog,
+    SetReconstructionPositionInput(String),
+    SetReconstructionViewWindowInput(String),
+    UpdateReconstructionViewSettings,
+    SetReconstructionOffsetSlider(String),
 }
 
 enum Screen {
@@ -73,6 +87,24 @@ struct AbfAnalytics {
     x_axis_link: AxisLink,
     show_channel_selector: bool,
     graph_height: f32,
+
+    // Custom sine waves for FFT overlay
+    show_custom_sine_waves: bool,
+    custom_frequency_input: String,
+    custom_amplitude_input: String,
+    custom_phase_input: String,
+    custom_sine_waves: Vec<(f64, f64, f64)>, // (frequency Hz, amplitude, phase radians)
+    reconstruction_widget: Option<PlotWidget>,
+    reconstruction_position_input: String,    // time offset input for reconstruction
+    reconstruction_view_window_input: String, // window duration input for reconstruction
+    reconstruction_time_offset: f64,          // separate time offset for reconstruction plot
+    reconstruction_view_duration: f64,        // separate view duration for reconstruction plot
+    reconstruction_offset_input: String,      // offset input for sine reconstruction
+    reconstruction_offset: f32,               // vertical offset for sine wave
+    fft_on_peaks: bool,                       // perform FFT on detected peaks instead of raw signal
+
+    // File selection on start screen
+    selected_file_path: String,
 
     // Current screen state
     screen: Screen,
@@ -101,6 +133,20 @@ impl AbfAnalytics {
             x_axis_link: AxisLink::new(),
             show_channel_selector: false,
             graph_height: 140.0,
+            show_custom_sine_waves: false,
+            custom_frequency_input: "10.0".to_string(),
+            custom_amplitude_input: "1.0".to_string(),
+            custom_phase_input: "0.0".to_string(),
+            custom_sine_waves: Vec::new(),
+            reconstruction_widget: None,
+            reconstruction_position_input: "0.0".to_string(),
+            reconstruction_view_window_input: "5.0".to_string(),
+            reconstruction_time_offset: 0.0,
+            reconstruction_view_duration: 5.0,
+            reconstruction_offset_input: "0.0".to_string(),
+            reconstruction_offset: 0.0,
+            fft_on_peaks: false,
+            selected_file_path: "Example.abf".to_string(),
             screen: Screen::Selecting,
         }
     }
@@ -130,22 +176,17 @@ impl AbfAnalytics {
                         let mut new_widgets = Vec::new();
                         for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                             if selected {
-                                let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                                let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                                let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                                for p in peaks.iter_mut() {
-                                    p[0] += self.time_offset;
-                                }
                                 let widget = build_analysis_plot(
                                     &self.channels[ch_idx],
                                     &self.channel_names[ch_idx],
                                     &self.channel_units[ch_idx],
-                                    &peaks,
                                     self.sample_rate,
                                     self.view_duration,
                                     self.time_offset,
                                     &self.x_axis_link,
                                     *analysis_type,
+                                    &self.custom_sine_waves,
+                                    self.fft_on_peaks,
                                 );
                                 new_widgets.push(widget);
                             }
@@ -156,7 +197,7 @@ impl AbfAnalytics {
             }
             Message::ConfirmSelection => {
                 let (channels, sample_rate, channel_names, channel_units, total_duration) =
-                    read_channel_data(self.channel_selected, 0.0, f64::INFINITY);
+                    read_channel_data(&self.selected_file_path, self.channel_selected, 0.0, f64::INFINITY);
 
                 self.channels = channels;
                 self.sample_rate = sample_rate;
@@ -219,22 +260,17 @@ impl AbfAnalytics {
                     let mut new_widgets = Vec::new();
                     for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                         if selected {
-                            let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                            let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                            let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                            for p in peaks.iter_mut() {
-                                p[0] += self.time_offset;
-                            }
                             let widget = build_analysis_plot(
                                 &self.channels[ch_idx],
                                 &self.channel_names[ch_idx],
                                 &self.channel_units[ch_idx],
-                                &peaks,
                                 self.sample_rate,
                                 self.view_duration,
                                 self.time_offset,
                                 &self.x_axis_link,
                                 *analysis_type,
+                                &self.custom_sine_waves,
+                                self.fft_on_peaks,
                             );
                             new_widgets.push(widget);
                         }
@@ -327,22 +363,17 @@ impl AbfAnalytics {
                             let mut new_widgets = Vec::new();
                             for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                                 if selected {
-                                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                                    let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                                    for p in peaks.iter_mut() {
-                                        p[0] += self.time_offset;
-                                    }
                                     let widget = build_analysis_plot(
                                         &self.channels[ch_idx],
                                         &self.channel_names[ch_idx],
                                         &self.channel_units[ch_idx],
-                                        &peaks,
                                         self.sample_rate,
                                         self.view_duration,
                                         self.time_offset,
                                         &self.x_axis_link,
                                         *analysis_type,
+                                        &self.custom_sine_waves,
+                                        self.fft_on_peaks,
                                     );
                                     new_widgets.push(widget);
                                 }
@@ -358,6 +389,10 @@ impl AbfAnalytics {
                     if let Some(widget) = widgets.get_mut(idx) {
                         widget.update(plot_msg);
                     }
+                } else if let Screen::Analytics { widgets, .. } = &mut self.screen {
+                    if let Some(widget) = widgets.get_mut(idx) {
+                        widget.update(plot_msg);
+                    }
                 }
             }
             Message::SwitchToAnalytics => {
@@ -369,24 +404,17 @@ impl AbfAnalytics {
                 let mut widgets = Vec::new();
                 for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
                     if selected {
-                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-
-                        let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                        for p in peaks.iter_mut() {
-                            p[0] += self.time_offset;
-                        }
-
                         let widget = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
-                            &peaks,
                             self.sample_rate,
                             default_view,
                             0.0,
                             &self.x_axis_link,
                             analysis_type,
+                            &self.custom_sine_waves,
+                            self.fft_on_peaks,
                         );
                         widgets.push(widget);
                     }
@@ -434,22 +462,17 @@ impl AbfAnalytics {
                     }
 
                     for ch_idx in ch_idx_vec {
-                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                        let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                        for p in peaks.iter_mut() {
-                            p[0] += self.time_offset;
-                        }
                         let widget = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
-                            &peaks,
                             self.sample_rate,
                             self.view_duration,
                             self.time_offset,
                             &self.x_axis_link,
                             *analysis_type,
+                            &self.custom_sine_waves,
+                            self.fft_on_peaks,
                         );
                         new_widgets.push(widget);
                     }
@@ -469,27 +492,300 @@ impl AbfAnalytics {
                     }
 
                     for ch_idx in ch_idx_vec {
-                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                        let peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                        let mut peaks_with_offset = peaks.clone();
-                        for p in peaks_with_offset.iter_mut() {
-                            p[0] += self.time_offset;
-                        }
                         let widget = build_analysis_plot(
                             &self.channels[ch_idx],
                             &self.channel_names[ch_idx],
                             &self.channel_units[ch_idx],
-                            &peaks_with_offset,
                             self.sample_rate,
                             self.view_duration,
                             self.time_offset,
                             &self.x_axis_link,
-                            atype,
+                            *analysis_type,
+                            &self.custom_sine_waves,
+                            self.fft_on_peaks,
                         );
                         new_widgets.push(widget);
                     }
                     *widgets = new_widgets;
+                }
+            }
+            Message::ToggleCustomSineWaves => {
+                self.show_custom_sine_waves = !self.show_custom_sine_waves;
+                // Rebuild reconstruction if showing waves
+                if self.show_custom_sine_waves && !self.custom_sine_waves.is_empty() {
+                    // Find first selected channel
+                    if let Some(first_ch_idx) = self.channel_selected.iter().position(|&b| b) {
+                        // Calculate mean of detected peaks to initialize amplitude
+                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                        let start_idx = start_idx.min(self.channels[first_ch_idx].len());
+                        let end_idx = end_idx.min(self.channels[first_ch_idx].len());
+
+                        let peaks = detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate);
+                        if !peaks.is_empty() {
+                            let mean_peak = peaks.iter().map(|p| p[1]).sum::<f64>() / peaks.len() as f64;
+                            self.reconstruction_offset = mean_peak as f32;
+                            self.reconstruction_offset_input = format!("{:.4}", mean_peak);
+                        }
+
+                        self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                            &self.custom_sine_waves,
+                            &self.channels[first_ch_idx],
+                            self.sample_rate,
+                            self.view_duration,
+                            self.time_offset,
+                            self.reconstruction_offset,
+                            self.fft_on_peaks,
+                        ));
+                    }
+                } else {
+                    self.reconstruction_widget = None;
+                }
+                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    if *analysis_type == AnalysisType::FourierTransform {
+                        let mut new_widgets = Vec::new();
+                        for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                            if selected {
+                                let widget = build_analysis_plot(
+                                    &self.channels[ch_idx],
+                                    &self.channel_names[ch_idx],
+                                    &self.channel_units[ch_idx],
+                                    self.sample_rate,
+                                    self.view_duration,
+                                    self.time_offset,
+                                    &self.x_axis_link,
+                                    *analysis_type,
+                                    &self.custom_sine_waves,
+                                    self.fft_on_peaks,
+                                );
+                                new_widgets.push(widget);
+                            }
+                        }
+                        *widgets = new_widgets;
+                    }
+                }
+            }
+            Message::SetCustomFrequencyInput(input) => {
+                self.custom_frequency_input = input;
+            }
+            Message::SetCustomAmplitudeInput(input) => {
+                self.custom_amplitude_input = input;
+            }
+            Message::SetCustomPhaseInput(input) => {
+                self.custom_phase_input = input;
+            }
+            Message::AddCustomSineWave => {
+                if let (Ok(freq), Ok(amp), Ok(phase)) = (
+                    self.custom_frequency_input.parse::<f64>(),
+                    self.custom_amplitude_input.parse::<f64>(),
+                    self.custom_phase_input.parse::<f64>(),
+                ) {
+                    if freq >= 0.0001 && amp > 0.0 {
+                        self.custom_sine_waves.push((freq, amp, phase));
+                        // Rebuild reconstruction widget
+                        if self.show_custom_sine_waves {
+                            // Find first selected channel
+                            if let Some(first_ch_idx) = self.channel_selected.iter().position(|&b| b) {
+                                // Initialize amplitude from mean of peaks if not already set
+                                if self.reconstruction_offset == 0.0 {
+                                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                                    let start_idx = start_idx.min(self.channels[first_ch_idx].len());
+                                    let end_idx = end_idx.min(self.channels[first_ch_idx].len());
+
+                                    let peaks = detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate);
+                                    if !peaks.is_empty() {
+                                        let mean_peak = peaks.iter().map(|p| p[1]).sum::<f64>() / peaks.len() as f64;
+                                        self.reconstruction_offset = mean_peak as f32;
+                                        self.reconstruction_offset_input = format!("{:.4}", mean_peak);
+                                    }
+                                }
+
+                                self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                                    &self.custom_sine_waves,
+                                    &self.channels[first_ch_idx],
+                                    self.sample_rate,
+                                    self.view_duration,
+                                    self.time_offset,
+                                    self.reconstruction_offset,
+                                    self.fft_on_peaks,
+                                ));
+                            }
+                        }
+                        // Trigger FFT plots to redraw with new sine wave
+                        if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                            if *analysis_type == AnalysisType::FourierTransform {
+                                let mut new_widgets = Vec::new();
+                                for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                                    if selected {
+                                        let widget = build_analysis_plot(
+                                            &self.channels[ch_idx],
+                                            &self.channel_names[ch_idx],
+                                            &self.channel_units[ch_idx],
+                                            self.sample_rate,
+                                            self.view_duration,
+                                            self.time_offset,
+                                            &self.x_axis_link,
+                                            *analysis_type,
+                                            &self.custom_sine_waves,
+                                            self.fft_on_peaks,
+                                        );
+                                        new_widgets.push(widget);
+                                    }
+                                }
+                                *widgets = new_widgets;
+                            }
+                        }
+                    }
+                }
+            }
+            Message::RemoveCustomSineWave(idx) => {
+                if idx < self.custom_sine_waves.len() {
+                    self.custom_sine_waves.remove(idx);
+                    // Rebuild reconstruction widget
+                    if self.show_custom_sine_waves {
+                        // Find first selected channel
+                        if let Some(first_ch_idx) = self.channel_selected.iter().position(|&b| b) {
+                            self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                                &self.custom_sine_waves,
+                                &self.channels[first_ch_idx],
+                                self.sample_rate,
+                                self.view_duration,
+                                self.time_offset,
+                                self.reconstruction_offset,
+                                self.fft_on_peaks,
+                            ));
+                        }
+                    }
+                    // Trigger FFT plots to redraw
+                    if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                        if *analysis_type == AnalysisType::FourierTransform {
+                            let mut new_widgets = Vec::new();
+                            for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                                if selected {
+                                    let widget = build_analysis_plot(
+                                        &self.channels[ch_idx],
+                                        &self.channel_names[ch_idx],
+                                        &self.channel_units[ch_idx],
+                                        self.sample_rate,
+                                        self.view_duration,
+                                        self.time_offset,
+                                        &self.x_axis_link,
+                                        *analysis_type,
+                                        &self.custom_sine_waves,
+                                        self.fft_on_peaks,
+                                    );
+                                    new_widgets.push(widget);
+                                }
+                            }
+                            *widgets = new_widgets;
+                        }
+                    }
+                }
+            }
+            Message::SetReconstructionOffsetSlider(input) => {
+                self.reconstruction_offset_input = input.clone();
+                // Parse and update offset
+                if let Ok(offset) = input.parse::<f32>() {
+                    self.reconstruction_offset = offset;
+
+                    // Rebuild reconstruction widget with new offset
+                    if let Screen::Analytics { .. } = &self.screen {
+                        if !self.custom_sine_waves.is_empty() && !self.channels.is_empty() {
+                            self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                                &self.custom_sine_waves,
+                                &self.channels[0],
+                                self.sample_rate,
+                                self.reconstruction_view_duration,
+                                self.reconstruction_time_offset,
+                                self.reconstruction_offset,
+                                self.fft_on_peaks,
+                            ));
+                        }
+                    }
+                }
+            }
+            Message::ToggleFFTOnPeaks => {
+                self.fft_on_peaks = !self.fft_on_peaks;
+                // Trigger FFT plots to redraw and rebuild reconstruction widget
+                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    if *analysis_type == AnalysisType::FourierTransform {
+                        let mut new_widgets = Vec::new();
+                        for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                            if selected {
+                                let widget = build_analysis_plot(
+                                    &self.channels[ch_idx],
+                                    &self.channel_names[ch_idx],
+                                    &self.channel_units[ch_idx],
+                                    self.sample_rate,
+                                    self.view_duration,
+                                    self.time_offset,
+                                    &self.x_axis_link,
+                                    *analysis_type,
+                                    &self.custom_sine_waves,
+                                    self.fft_on_peaks,
+                                );
+                                new_widgets.push(widget);
+                            }
+                        }
+                        *widgets = new_widgets;
+                    }
+                }
+                // Also rebuild reconstruction widget if it exists
+                if self.show_custom_sine_waves && !self.custom_sine_waves.is_empty() {
+                    if let Some(first_ch_idx) = self.channel_selected.iter().position(|&b| b) {
+                        self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                            &self.custom_sine_waves,
+                            &self.channels[first_ch_idx],
+                            self.sample_rate,
+                            self.view_duration,
+                            self.time_offset,
+                            self.reconstruction_offset,
+                            self.fft_on_peaks,
+                        ));
+                    }
+                }
+            }
+            Message::OpenFileDialog => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("ABF Files", &["abf"])
+                    .add_filter("All Files", &["*"])
+                    .pick_file()
+                {
+                    if let Some(file_name) = path.file_name() {
+                        if let Some(name_str) = file_name.to_str() {
+                            self.selected_file_path = name_str.to_string();
+                        }
+                    }
+                }
+            }
+            Message::SetReconstructionPositionInput(input) => {
+                self.reconstruction_position_input = input;
+            }
+            Message::SetReconstructionViewWindowInput(input) => {
+                self.reconstruction_view_window_input = input;
+            }
+            Message::UpdateReconstructionViewSettings => {
+                if let Ok(offset) = self.reconstruction_position_input.parse::<f64>() {
+                    self.reconstruction_time_offset = offset.max(0.0);
+                }
+                if let Ok(window) = self.reconstruction_view_window_input.parse::<f64>() {
+                    self.reconstruction_view_duration = window.max(0.1);
+                }
+
+                // Rebuild reconstruction widget with new settings
+                if let Screen::Analytics { .. } = &self.screen {
+                    if !self.custom_sine_waves.is_empty() && !self.channels.is_empty() {
+                        self.reconstruction_widget = Some(build_reconstruction_plot_with_offset(
+                            &self.custom_sine_waves,
+                            &self.channels[0],
+                            self.sample_rate,
+                            self.reconstruction_view_duration,
+                            self.reconstruction_time_offset,
+                            self.reconstruction_offset,
+                            self.fft_on_peaks,
+                        ));
+                    }
                 }
             }
         }
@@ -506,6 +802,21 @@ impl AbfAnalytics {
     fn view_selecting(&self) -> Element<'_, Message> {
         let title = text("ABF Analytics Viewer").size(32);
 
+        // File selection section
+        let file_section = {
+            column![
+                text("Select ABF File:").size(14),
+                row![
+                    container(text(&self.selected_file_path)).width(Fill).padding(8),
+                    button("Browse...").on_press(Message::OpenFileDialog).padding(8),
+                ]
+                .spacing(8)
+                .width(Fill),
+            ]
+            .spacing(8)
+            .padding(20)
+        };
+
         let channels_selector = {
             let mut col = column![text("Select Channels to Load:").size(18)].spacing(12).padding(20);
             for (idx, selected) in self.channel_selected.iter().enumerate() {
@@ -517,6 +828,7 @@ impl AbfAnalytics {
 
         let content = column![
             container(title).padding(20).width(Fill),
+            file_section,
             scrollable(container(channels_selector).padding(10).width(Fill)).height(Fill),
             container(button("Load Data & View Signals").on_press(Message::ConfirmSelection).padding(12))
                 .padding(20)
@@ -587,7 +899,7 @@ impl AbfAnalytics {
         if let Screen::Analytics { widgets, analysis_type } = &self.screen {
             let selected_count = self.channel_selected.iter().filter(|&&b| b).count();
 
-            let controls = self
+            let mut controls = self
                 .build_control_panel(
                     &self.position_input,
                     &self.view_window_input,
@@ -603,6 +915,124 @@ impl AbfAnalytics {
                     .spacing(10)
                     .align_y(Center),
                 );
+
+            // Add custom sine wave checkbox and FFT checkbox only for FFT
+            if matches!(*analysis_type, AnalysisType::FourierTransform) {
+                controls = controls.push(
+                    row![
+                        checkbox(self.show_custom_sine_waves)
+                            .label("Overlay Custom Sine Waves")
+                            .on_toggle(|_| Message::ToggleCustomSineWaves),
+                        checkbox(self.fft_on_peaks)
+                            .label("FFT on Detected Peaks Only")
+                            .on_toggle(|_| Message::ToggleFFTOnPeaks),
+                        space().width(Fill),
+                    ]
+                    .spacing(20)
+                    .padding(10),
+                );
+            }
+
+            // Add frequency/amplitude/phase input only when custom sine waves are enabled
+            if *analysis_type == AnalysisType::FourierTransform && self.show_custom_sine_waves {
+                controls = controls.push(
+                    row![
+                        column![
+                            text("Frequency (Hz)").size(10),
+                            text_input("10.0", &self.custom_frequency_input)
+                                .on_input(Message::SetCustomFrequencyInput)
+                                .width(80)
+                                .padding(4),
+                        ]
+                        .spacing(4),
+                        column![
+                            text("Amplitude").size(10),
+                            text_input("1.0", &self.custom_amplitude_input)
+                                .on_input(Message::SetCustomAmplitudeInput)
+                                .width(80)
+                                .padding(4),
+                        ]
+                        .spacing(4),
+                        column![
+                            text("Phase (rad)").size(10),
+                            text_input("0.0", &self.custom_phase_input)
+                                .on_input(Message::SetCustomPhaseInput)
+                                .width(80)
+                                .padding(4),
+                        ]
+                        .spacing(4),
+                        button("Add Wave").on_press(Message::AddCustomSineWave).padding(6),
+                        space().width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Center)
+                    .padding(10),
+                );
+
+                // List of custom waves
+                if !self.custom_sine_waves.is_empty() {
+                    let mut waves_list = column![text("Custom Waves:").size(10)].spacing(4).padding(10);
+                    for (idx, (freq, amp, phase)) in self.custom_sine_waves.iter().enumerate() {
+                        waves_list = waves_list.push(
+                            row![
+                                text(format!("{:.1}Hz @ {:.2}A φ={:.2}", freq, amp, phase)).size(10),
+                                space().width(Fill),
+                                button("×").on_press(Message::RemoveCustomSineWave(idx)).padding(2),
+                            ]
+                            .spacing(4)
+                            .width(Fill),
+                        );
+                    }
+                    controls = controls.push(waves_list);
+
+                    // Reconstruction sine offset input
+                    controls = controls.push(
+                        row![
+                            column![
+                                text("Sine Offset").size(10),
+                                text_input("0.0", &self.reconstruction_offset_input)
+                                    .on_input(Message::SetReconstructionOffsetSlider)
+                                    .width(100)
+                                    .padding(4),
+                            ]
+                            .spacing(4),
+                            space().width(Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(Center)
+                        .padding(10),
+                    );
+
+                    // Reconstruction view settings
+                    controls = controls.push(
+                        row![
+                            column![
+                                text("Recon Position (s)").size(10),
+                                text_input("0.0", &self.reconstruction_position_input)
+                                    .on_input(Message::SetReconstructionPositionInput)
+                                    .width(100)
+                                    .padding(4),
+                            ]
+                            .spacing(4),
+                            column![
+                                text("Recon Window (s)").size(10),
+                                text_input("5.0", &self.reconstruction_view_window_input)
+                                    .on_input(Message::SetReconstructionViewWindowInput)
+                                    .width(100)
+                                    .padding(4),
+                            ]
+                            .spacing(4),
+                            button("Update").on_press(Message::UpdateReconstructionViewSettings).padding(6),
+                            space().width(Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(Center)
+                        .padding(10),
+                    );
+                }
+            }
+
+            let controls = controls;
 
             // Height slider
             let height_control = row![
@@ -620,16 +1050,32 @@ impl AbfAnalytics {
             for (index, &selected) in self.channel_selected.iter().enumerate() {
                 if selected && ch_idx < widgets.len() {
                     let widget = &widgets[ch_idx];
-                    let plot = widget.view().map(move |msg| Message::PlotMessage(index, msg));
+                    let plot = widget.view().map(move |msg| Message::PlotMessage(ch_idx, msg));
                     let ch_label = text(format!("Channel {}", index)).size(12);
                     let row_layout = row![
                         container(ch_label).width(60).padding(5),
-                        container(plot).height(self.graph_height).width(Fill)
+                        container(plot).height(self.graph_height).width(Fill).padding(8)
                     ]
                     .spacing(0)
                     .width(Fill);
                     plots_col = plots_col.push(row_layout);
                     ch_idx += 1;
+                }
+            }
+
+            // Add reconstruction plot if FFT mode with custom sine waves
+            if matches!(*analysis_type, AnalysisType::FourierTransform) && self.show_custom_sine_waves && !self.custom_sine_waves.is_empty() {
+                if let Some(ref reconstruction_widget) = self.reconstruction_widget {
+                    // Reconstruction plot: map messages to idempotent message (no effect)
+                    let recon_plot = reconstruction_widget.view().map(|_msg| Message::SetGraphHeight(self.graph_height));
+                    let recon_label = text("Reconstructed Signal").size(12);
+                    let recon_row = row![
+                        container(recon_label).width(60).padding(5),
+                        container(recon_plot).height(self.graph_height).width(Fill).padding(8)
+                    ]
+                    .spacing(0)
+                    .width(Fill);
+                    plots_col = plots_col.push(recon_row);
                 }
             }
 
@@ -870,7 +1316,12 @@ fn build_zoomed_widgets_data(
         .collect()
 }
 
-fn read_channel_data(_channel_selected: [bool; 9], _start_offset: f64, _duration: f64) -> (Vec<Vec<f32>>, f64, Vec<String>, Vec<String>, f64) {
+fn read_channel_data(
+    file_path: &str,
+    _channel_selected: [bool; 9],
+    _start_offset: f64,
+    _duration: f64,
+) -> (Vec<Vec<f32>>, f64, Vec<String>, Vec<String>, f64) {
     let mut channels = Vec::new();
     let mut sample_rate = 1.0;
     let mut channel_units: Vec<String> = Vec::new();
@@ -878,7 +1329,7 @@ fn read_channel_data(_channel_selected: [bool; 9], _start_offset: f64, _duration
     let mut total_duration = 0.0;
 
     if let Ok(mut reader) = AbfReader::open_with_options(
-        Path::new("Example.abf"),
+        Path::new(file_path),
         abf_reader::AbfHeaderReadOptions {
             group5_hardware: true,
             group7_multichannel: true,
@@ -1062,12 +1513,13 @@ fn build_analysis_plot(
     channel_data: &[f32],
     channel_name: &str,
     channel_unit: &str,
-    peaks: &[[f64; 2]],
     sample_rate: f64,
     view_duration: f64,
     time_offset: f64,
     x_axis_link: &AxisLink,
     analysis_type: AnalysisType,
+    custom_sine_waves: &[(f64, f64, f64)],
+    fft_on_peaks: bool,
 ) -> PlotWidget {
     // Build signal data
     let signal_points: Vec<[f64; 2]> = channel_data
@@ -1151,15 +1603,15 @@ fn build_analysis_plot(
     let mut builder = PlotWidgetBuilder::new().add_series(signal_series);
 
     // Filter and add peaks only if PeakDetection analysis type
-    if matches!(analysis_type, AnalysisType::PeakDetection) && !peaks.is_empty() {
+    if matches!(analysis_type, AnalysisType::PeakDetection) {
+        let start_idx = (time_offset * sample_rate).floor() as usize;
+        let end_idx = ((time_offset + view_duration) * sample_rate).ceil() as usize;
+        let peaks = detect_peaks_simple(&channel_data[start_idx..end_idx], sample_rate);
         let filtered_peaks: Vec<[f64; 2]> = peaks.iter().filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max).copied().collect();
 
         if !filtered_peaks.is_empty() {
-            // Create vertical lines for each peak (better visualization)
-            // Draw from y_min to peak value as small vertical markers
             let mut peak_markers: Vec<[f64; 2]> = Vec::new();
             for peak in &filtered_peaks {
-                // Add peak point itself
                 peak_markers.push(*peak);
             }
 
@@ -1167,6 +1619,131 @@ fn build_analysis_plot(
                 .with_label("Peaks")
                 .with_color(Color::from_rgb(1.0, 0.2, 0.2));
             builder = builder.add_series(peaks_series);
+        }
+    }
+
+    if matches!(analysis_type, AnalysisType::FourierTransform) {
+        use rustfft::{num_complex::Complex, FftPlanner};
+        use std::f64::consts::PI;
+
+        let start_idx = (time_offset * sample_rate).floor() as usize;
+        let end_idx = ((time_offset + view_duration) * sample_rate).ceil() as usize;
+        let start_idx = start_idx.min(channel_data.len());
+        let end_idx = end_idx.min(channel_data.len());
+
+        // Determine which data to use for FFT
+        let fft_data: Vec<f32> = if fft_on_peaks {
+            // Use detected peaks instead of raw signal
+            let peaks = detect_peaks_simple(&channel_data[start_idx..end_idx], sample_rate);
+            peaks.iter().map(|p| p[1] as f32).collect()
+        } else {
+            // Use raw signal data
+            channel_data[start_idx..end_idx].to_vec()
+        };
+
+        let n = fft_data.len();
+
+        if n == 0 {
+            // Fallthrough: no data to FFT
+        } else {
+            // First, remove DC offset by subtracting the mean
+            let mean: f64 = fft_data.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
+
+            // FFT length: zero-pad to next power of two for speed
+            let fft_len = n.next_power_of_two();
+            let mut buffer = vec![Complex::new(0.0, 0.0); fft_len];
+
+            // Hann window and compute window sum for amplitude correction
+            let mut window_sum = 0.0_f64;
+            if n > 1 {
+                for i in 0..n {
+                    let w = 0.5 * (1.0 - (2.0 * PI * i as f64 / (n as f64 - 1.0)).cos());
+                    // Apply window to mean-removed signal
+                    let sample = fft_data[i] as f64 - mean;
+                    buffer[i].re = sample * w;
+                    window_sum += w;
+                }
+            } else {
+                buffer[0].re = (fft_data[0] as f64) - mean;
+                window_sum = 1.0;
+            }
+
+            // FFT
+            let mut planner = FftPlanner::new();
+            let fft = planner.plan_fft_forward(fft_len);
+            fft.process(&mut buffer);
+
+            // Scale: correct for window gain and produce single-sided amplitude
+            let scale = if window_sum > 0.0 { 2.0 / window_sum } else { 2.0 / (n as f64) };
+            let half = fft_len / 2;
+            let mut fft_markers: Vec<[f64; 2]> = Vec::with_capacity(half);
+            // Now we can safely include all frequency bins including 0 Hz (DC will be minimal)
+            for i in 0..half {
+                // When FFT is on peaks, frequency resolution depends on the number of peaks
+                // Effective sample rate for peaks = n_peaks / view_duration
+                // Frequency = bin * (effective_sample_rate) / fft_len
+                let freq = if fft_on_peaks {
+                    i as f64 * (n as f64) / (view_duration * fft_len as f64)
+                } else {
+                    i as f64 * sample_rate / fft_len as f64
+                };
+                let mag = buffer[i].norm() * scale;
+                fft_markers.push([freq, mag]);
+            }
+
+            if !fft_markers.is_empty() {
+                // Use different label and color if FFT is on peaks
+                let (fft_label, fft_color) = if fft_on_peaks {
+                    ("Peak Detection FFT", Color::from_rgb(0.8, 0.4, 0.2))
+                } else {
+                    ("FFT Magnitude", Color::from_rgb(0.2, 0.4, 1.0))
+                };
+
+                let fft_series = Series::line_only(fft_markers.clone(), LineStyle::Solid)
+                    .with_label(fft_label)
+                    .with_color(fft_color);
+
+                let y_min = fft_markers.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+                let y_max = fft_markers.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+                let y_pad = if y_max > y_min {
+                    (y_max - y_min) * 0.1
+                } else {
+                    y_max.abs().max(1.0) * 0.1
+                };
+
+                // Build FFT-only plot (do not reuse time-domain builder settings)
+                let mut builder = PlotWidgetBuilder::new()
+                    .add_series(fft_series)
+                    .with_cursor_overlay(true)
+                    .with_x_label("Frequency (Hz)")
+                    .with_y_label("Magnitude")
+                    .with_y_lim(y_min - y_pad, y_max + y_pad)
+                    .with_x_axis_link(x_axis_link.clone())
+                    .disable_legend()
+                    .disable_controls_help()
+                    .with_crosshairs(true);
+
+                // Add custom sine wave series if present
+                let custom_colors = [
+                    Color::from_rgb(1.0, 0.5, 0.0), // Orange
+                    Color::from_rgb(1.0, 0.0, 1.0), // Magenta
+                    Color::from_rgb(0.0, 1.0, 1.0), // Cyan
+                    Color::from_rgb(1.0, 1.0, 0.0), // Yellow
+                    Color::from_rgb(0.5, 1.0, 0.0), // Lime
+                ];
+
+                for (idx, &(freq, amp, _phase)) in custom_sine_waves.iter().enumerate() {
+                    // Create a marker at the sine wave frequency with scaled amplitude
+                    let sine_point = vec![[freq, amp]];
+                    let color = custom_colors[idx % custom_colors.len()];
+                    let series = Series::line_only(sine_point, LineStyle::Solid)
+                        .with_label(format!("{}Hz", freq))
+                        .with_color(color);
+                    builder = builder.add_series(series);
+                }
+
+                return builder.build().expect("Failed to build FFT plot");
+            }
         }
     }
 
@@ -1188,4 +1765,228 @@ fn build_analysis_plot(
         .disable_controls_help()
         .build()
         .expect("Failed to build analysis plot")
+}
+
+#[allow(dead_code)]
+fn build_reconstruction_plot(
+    custom_sine_waves: &[(f64, f64, f64)],
+    channel_data: &[f32],
+    sample_rate: f64,
+    view_duration: f64,
+    time_offset: f64,
+) -> PlotWidget {
+    if custom_sine_waves.is_empty() {
+        return PlotWidgetBuilder::new()
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .build()
+            .expect("Failed to build reconstruction plot");
+    }
+
+    // Generate time-domain reconstruction
+    let num_samples = (view_duration * sample_rate) as usize;
+    if num_samples == 0 {
+        return PlotWidgetBuilder::new()
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .build()
+            .expect("Failed to build reconstruction plot");
+    }
+
+    // Generate combined sine wave by summing all components
+    let mut reconstruction: Vec<f64> = vec![0.0; num_samples];
+    for &(freq, amp, _phase) in custom_sine_waves.iter() {
+        for i in 0..num_samples {
+            let time = time_offset + (i as f64) / sample_rate;
+            let sample = amp * (2.0 * std::f64::consts::PI * freq * time).sin();
+            reconstruction[i] += sample;
+        }
+    }
+
+    // Convert reconstruction to plot points
+    let mut recon_points: Vec<[f64; 2]> = Vec::with_capacity(num_samples);
+    for i in 0..num_samples {
+        let time = time_offset + (i as f64) / sample_rate;
+        recon_points.push([time, reconstruction[i]]);
+    }
+
+    // Extract raw signal points in the same time window
+    let start_idx = (time_offset * sample_rate).floor() as usize;
+    let end_idx = ((time_offset + view_duration) * sample_rate).ceil() as usize;
+    let start_idx = start_idx.min(channel_data.len());
+    let end_idx = end_idx.min(channel_data.len());
+
+    let mut raw_points: Vec<[f64; 2]> = Vec::new();
+    for (i, &value) in channel_data[start_idx..end_idx].iter().enumerate() {
+        let time = time_offset + (i as f64) / sample_rate;
+        raw_points.push([time, value as f64]);
+    }
+
+    // Calculate Y bounds from both signals
+    let mut all_values = reconstruction.clone();
+    all_values.extend(channel_data[start_idx..end_idx].iter().map(|&v| v as f64));
+    let y_min = all_values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let y_max = all_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let y_range = y_max - y_min;
+    let padding = if y_range > 0.0 { y_range * 0.1 } else { 0.5 };
+
+    // Raw signal series (blue)
+    let raw_series = Series::line_only(raw_points, LineStyle::Solid)
+        .with_label("Original Signal")
+        .with_color(Color::from_rgb(0.2, 0.5, 0.9));
+
+    // Reconstructed signal series (red)
+    let recon_series = Series::line_only(recon_points, LineStyle::Solid)
+        .with_label("Reconstructed Signal")
+        .with_color(Color::from_rgb(0.9, 0.2, 0.2));
+
+    PlotWidgetBuilder::new()
+        .add_series(raw_series)
+        .add_series(recon_series)
+        .with_cursor_overlay(true)
+        .with_x_label("Time (s)")
+        .with_y_label("Amplitude")
+        .with_y_lim(y_min - padding, y_max + padding)
+        .with_crosshairs(true)
+        .build()
+        .expect("Failed to build reconstruction plot")
+}
+
+fn build_reconstruction_plot_with_offset(
+    custom_sine_waves: &[(f64, f64, f64)],
+    channel_data: &[f32],
+    sample_rate: f64,
+    view_duration: f64,
+    time_offset: f64,
+    sine_offset: f32,
+    fft_on_peaks: bool,
+) -> PlotWidget {
+    if custom_sine_waves.is_empty() {
+        return PlotWidgetBuilder::new()
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .build()
+            .expect("Failed to build reconstruction plot");
+    }
+
+    // Extract detected peaks from the ENTIRE channel (not just visible window)
+    // This gives better detection context, then filter to visible window
+    let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+    let zoomed_x_max = time_offset + view_duration;
+    let visible_peaks: Vec<[f64; 2]> = all_peaks
+        .iter()
+        .filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max)
+        .copied()
+        .collect();
+
+    // Generate time-domain reconstruction with vertical offset
+    let num_samples = (view_duration * sample_rate) as usize;
+    if num_samples == 0 {
+        return PlotWidgetBuilder::new()
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .build()
+            .expect("Failed to build reconstruction plot");
+    }
+
+    // Generate combined sine wave by summing all components and adding vertical offset
+    let mut reconstruction: Vec<f64> = vec![0.0; num_samples];
+    for &(freq, amp, phase) in custom_sine_waves.iter() {
+        for i in 0..num_samples {
+            let time = time_offset + (i as f64) / sample_rate;
+            let sample = amp * (2.0 * std::f64::consts::PI * freq * time + phase).sin();
+            reconstruction[i] += sample + (sine_offset as f64);
+        }
+    }
+
+    let mut builder = PlotWidgetBuilder::new();
+
+    // Handle peaks display: either peaks graph or time-domain original signal
+    if fft_on_peaks && !visible_peaks.is_empty() {
+        // Show detected peaks as a graph (peaks are already in absolute time)
+        let peak_markers: Vec<[f64; 2]> = visible_peaks.clone();
+
+        // Peaks series (orange)
+        let peaks_series = Series::line_only(peak_markers.clone(), LineStyle::Solid)
+            .with_label("Detected Peaks")
+            .with_color(Color::from_rgb(1.0, 0.6, 0.0)); // orange for peaks
+
+        builder = builder.add_series(peaks_series);
+
+        // Convert reconstruction to plot points
+        let mut recon_points: Vec<[f64; 2]> = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let time = time_offset + (i as f64) / sample_rate;
+            recon_points.push([time, reconstruction[i]]);
+        }
+
+        // Reconstructed signal series (red)
+        let recon_series = Series::line_only(recon_points, LineStyle::Solid)
+            .with_label("Sine Reconstruction")
+            .with_color(Color::from_rgb(1.0, 0.2, 0.2));
+
+        // Calculate reconstruction bounds
+        let mut all_values = reconstruction.clone();
+        all_values.extend(peak_markers.iter().map(|p| p[1]));
+        let y_min = all_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = all_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_range = y_max - y_min;
+        let padding = if y_range > 0.0 { y_range * 0.1 } else { 0.5 };
+
+        builder = builder
+            .add_series(recon_series)
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .with_y_lim(y_min - padding, y_max + padding);
+    } else {
+        // Time-domain display with original raw signal
+        // Extract raw signal points in the visible window
+        let mut raw_points: Vec<[f64; 2]> = Vec::new();
+        let mut raw_amplitudes = Vec::new();
+        for (i, &value) in channel_data.iter().enumerate() {
+            let time = (i as f64) / sample_rate;
+            if time >= time_offset && time <= zoomed_x_max {
+                raw_points.push([time, value as f64]);
+                raw_amplitudes.push(value as f64);
+            }
+        }
+
+        // Convert reconstruction to plot points
+        let mut recon_points: Vec<[f64; 2]> = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let time = time_offset + (i as f64) / sample_rate;
+            recon_points.push([time, reconstruction[i]]);
+        }
+
+        // Calculate Y bounds from both signals
+        let mut all_values = reconstruction.clone();
+        all_values.extend(raw_amplitudes.iter().cloned());
+        let y_min = all_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_max = all_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_range = y_max - y_min;
+        let padding = if y_range > 0.0 { y_range * 0.1 } else { 0.5 };
+
+        // Original signal series (blue)
+        let signal_series = Series::line_only(raw_points, LineStyle::Solid)
+            .with_label("Original Signal")
+            .with_color(Color::from_rgb(0.2, 0.5, 0.9));
+
+        // Reconstructed signal series (red)
+        let recon_series = Series::line_only(recon_points, LineStyle::Solid)
+            .with_label("Sine Reconstruction")
+            .with_color(Color::from_rgb(0.9, 0.2, 0.2));
+
+        builder = builder
+            .add_series(signal_series)
+            .add_series(recon_series)
+            .with_x_label("Time (s)")
+            .with_y_label("Amplitude")
+            .with_y_lim(y_min - padding, y_max + padding);
+    }
+
+    builder
+        .with_cursor_overlay(true)
+        .with_crosshairs(true)
+        .build()
+        .expect("Failed to build reconstruction plot")
 }

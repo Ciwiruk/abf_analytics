@@ -7,6 +7,8 @@ edition = "2021"
 abf_reader = { version = "0.1.0", path = "abf_reader" }
 iced = { version = "0.14.0", features = ["wgpu"] }
 iced_plot = "0.4.0"
+rustfft = "6.4.1"
+rfd = "0.14"
 
 [profile.dev]
 opt-level = 3
