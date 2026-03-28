@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use abf_reader::AbfReader;
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, slider, space, text, text_input};
 use iced::{Center, Element, Fill};
 use iced_plot::{AxisLink, Color, LineStyle, PlotUiMessage, PlotWidget, PlotWidgetBuilder, Series};
 use std::path::Path;
@@ -30,8 +30,12 @@ impl std::fmt::Display for AnalysisType {
 #[derive(Debug, Clone)]
 enum Message {
     ToggleChannel(usize),
+    ToggleChannelTemp(usize),
     ConfirmSelection,
+    ConfirmChannelSelection,
+    CancelChannelSelection,
     ToggleChannelSelector,
+    SetGraphHeight(f32),
     ResetZoom,
     PanLeft,
     PanRight,
@@ -47,21 +51,15 @@ enum Message {
 
 enum Screen {
     Selecting,
-    Viewing {
-        widgets: Vec<iced_plot::PlotWidget>,
-    },
-    Analytics {
-        widget: PlotWidget,
-        selected_channel: usize,
-        analysis_type: AnalysisType,
-        analysis_peaks: Vec<[f64; 2]>,
-    },
+    Viewing { widgets: Vec<iced_plot::PlotWidget> },
+    Analytics { widgets: Vec<PlotWidget>, analysis_type: AnalysisType },
 }
 
 struct AbfAnalytics {
     // Shared state across all screens
     channels: Vec<Vec<f32>>,
     channel_selected: [bool; 9],
+    channel_selected_temp: [bool; 9],
     sample_rate: f64,
     channel_names: Vec<String>,
     channel_units: Vec<String>,
@@ -74,6 +72,7 @@ struct AbfAnalytics {
     view_duration: f64,
     x_axis_link: AxisLink,
     show_channel_selector: bool,
+    graph_height: f32,
 
     // Current screen state
     screen: Screen,
@@ -90,6 +89,7 @@ impl AbfAnalytics {
         AbfAnalytics {
             channels: Vec::new(),
             channel_selected: [true; 9],
+            channel_selected_temp: [true; 9],
             sample_rate: 1.0,
             channel_names: Vec::new(),
             channel_units: Vec::new(),
@@ -100,6 +100,7 @@ impl AbfAnalytics {
             view_duration: 5.0,
             x_axis_link: AxisLink::new(),
             show_channel_selector: false,
+            graph_height: 140.0,
             screen: Screen::Selecting,
         }
     }
@@ -123,31 +124,33 @@ impl AbfAnalytics {
                             &self.x_axis_link,
                         );
                     }
-                    // Update widget if in Analytics
-                    else if let Screen::Analytics {
-                        widget,
-                        selected_channel,
-                        analysis_peaks,
-                        analysis_type,
-                    } = &mut self.screen
-                    {
-                        // If selected channel was deselected, pick new one
-                        if !self.channel_selected[*selected_channel] {
-                            if let Some(next) = self.channel_selected.iter().position(|&b| b) {
-                                *selected_channel = next;
+                    // Update widgets if in Analytics
+                    else if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                        // Rebuild widgets for all selected channels
+                        let mut new_widgets = Vec::new();
+                        for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                            if selected {
+                                let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                                let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                                let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                                for p in peaks.iter_mut() {
+                                    p[0] += self.time_offset;
+                                }
+                                let widget = build_analysis_plot(
+                                    &self.channels[ch_idx],
+                                    &self.channel_names[ch_idx],
+                                    &self.channel_units[ch_idx],
+                                    &peaks,
+                                    self.sample_rate,
+                                    self.view_duration,
+                                    self.time_offset,
+                                    &self.x_axis_link,
+                                    *analysis_type,
+                                );
+                                new_widgets.push(widget);
                             }
                         }
-                        *widget = build_analysis_plot(
-                            &self.channels[*selected_channel],
-                            &self.channel_names[*selected_channel],
-                            &self.channel_units[*selected_channel],
-                            analysis_peaks,
-                            self.sample_rate,
-                            self.view_duration,
-                            self.time_offset,
-                            &self.x_axis_link,
-                            *analysis_type,
-                        );
+                        *widgets = new_widgets;
                     }
                 }
             }
@@ -184,6 +187,66 @@ impl AbfAnalytics {
             }
             Message::ToggleChannelSelector => {
                 self.show_channel_selector = !self.show_channel_selector;
+                if self.show_channel_selector {
+                    // Copy current selection to temporary when opening popup
+                    self.channel_selected_temp = self.channel_selected;
+                }
+            }
+            Message::ToggleChannelTemp(idx) => {
+                if idx < 9 {
+                    self.channel_selected_temp[idx] = !self.channel_selected_temp[idx];
+                }
+            }
+            Message::ConfirmChannelSelection => {
+                self.channel_selected = self.channel_selected_temp;
+                self.show_channel_selector = false;
+
+                // Rebuild widgets if in Viewing
+                if let Screen::Viewing { widgets } = &mut self.screen {
+                    *widgets = build_zoomed_widgets_data(
+                        &self.channels,
+                        &self.channel_selected,
+                        self.sample_rate,
+                        &self.channel_names,
+                        &self.channel_units,
+                        self.view_duration,
+                        self.time_offset,
+                        &self.x_axis_link,
+                    );
+                }
+                // Rebuild widgets if in Analytics
+                else if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    let mut new_widgets = Vec::new();
+                    for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                        if selected {
+                            let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                            let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                            let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                            for p in peaks.iter_mut() {
+                                p[0] += self.time_offset;
+                            }
+                            let widget = build_analysis_plot(
+                                &self.channels[ch_idx],
+                                &self.channel_names[ch_idx],
+                                &self.channel_units[ch_idx],
+                                &peaks,
+                                self.sample_rate,
+                                self.view_duration,
+                                self.time_offset,
+                                &self.x_axis_link,
+                                *analysis_type,
+                            );
+                            new_widgets.push(widget);
+                        }
+                    }
+                    *widgets = new_widgets;
+                }
+            }
+            Message::CancelChannelSelection => {
+                self.show_channel_selector = false;
+            }
+            Message::SetGraphHeight(height) => {
+                self.graph_height = height;
             }
             Message::ResetZoom => {
                 if let Screen::Viewing { widgets } = &mut self.screen {
@@ -260,23 +323,31 @@ impl AbfAnalytics {
                                 &self.x_axis_link,
                             );
                         }
-                        Screen::Analytics {
-                            widget,
-                            selected_channel,
-                            analysis_peaks,
-                            analysis_type,
-                        } => {
-                            *widget = build_analysis_plot(
-                                &self.channels[*selected_channel],
-                                &self.channel_names[*selected_channel],
-                                &self.channel_units[*selected_channel],
-                                analysis_peaks,
-                                self.sample_rate,
-                                self.view_duration,
-                                self.time_offset,
-                                &self.x_axis_link,
-                                *analysis_type,
-                            );
+                        Screen::Analytics { widgets, analysis_type } => {
+                            let mut new_widgets = Vec::new();
+                            for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                                if selected {
+                                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                                    let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                                    for p in peaks.iter_mut() {
+                                        p[0] += self.time_offset;
+                                    }
+                                    let widget = build_analysis_plot(
+                                        &self.channels[ch_idx],
+                                        &self.channel_names[ch_idx],
+                                        &self.channel_units[ch_idx],
+                                        &peaks,
+                                        self.sample_rate,
+                                        self.view_duration,
+                                        self.time_offset,
+                                        &self.x_axis_link,
+                                        *analysis_type,
+                                    );
+                                    new_widgets.push(widget);
+                                }
+                            }
+                            *widgets = new_widgets;
                         }
                         _ => {}
                     }
@@ -290,43 +361,44 @@ impl AbfAnalytics {
                 }
             }
             Message::SwitchToAnalytics => {
-                if let Some(ch_idx) = self.channel_selected.iter().position(|&b| b) {
-                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                let default_view = 5.0_f64.min(self.total_duration);
+                let analysis_type = AnalysisType::PeakDetection;
+                self.x_axis_link = AxisLink::new();
 
-                    let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
-                    for p in peaks.iter_mut() {
-                        p[0] += self.time_offset;
+                // Build analysis plots for all selected channels
+                let mut widgets = Vec::new();
+                for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                    if selected {
+                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+
+                        let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                        for p in peaks.iter_mut() {
+                            p[0] += self.time_offset;
+                        }
+
+                        let widget = build_analysis_plot(
+                            &self.channels[ch_idx],
+                            &self.channel_names[ch_idx],
+                            &self.channel_units[ch_idx],
+                            &peaks,
+                            self.sample_rate,
+                            default_view,
+                            0.0,
+                            &self.x_axis_link,
+                            analysis_type,
+                        );
+                        widgets.push(widget);
                     }
-
-                    let default_view = 5.0_f64.min(self.total_duration);
-                    let analysis_type = AnalysisType::PeakDetection;
-                    self.x_axis_link = AxisLink::new();
-                    let widget = build_analysis_plot(
-                        &self.channels[ch_idx],
-                        &self.channel_names[ch_idx],
-                        &self.channel_units[ch_idx],
-                        &peaks,
-                        self.sample_rate,
-                        default_view,
-                        0.0,
-                        &self.x_axis_link,
-                        analysis_type,
-                    );
-
-                    self.position_input = "0.0".to_string();
-                    self.view_window_input = format!("{:.1}", default_view);
-                    self.view_duration = default_view;
-                    self.time_offset = 0.0;
-                    self.show_channel_selector = false;
-
-                    self.screen = Screen::Analytics {
-                        widget,
-                        selected_channel: ch_idx,
-                        analysis_type,
-                        analysis_peaks: peaks,
-                    };
                 }
+
+                self.position_input = "0.0".to_string();
+                self.view_window_input = format!("{:.1}", default_view);
+                self.view_duration = default_view;
+                self.time_offset = 0.0;
+                self.show_channel_selector = false;
+
+                self.screen = Screen::Analytics { widgets, analysis_type };
             }
             Message::SwitchToViewing => {
                 let default_view = 5.0_f64.min(self.total_duration);
@@ -351,52 +423,73 @@ impl AbfAnalytics {
                 self.screen = Screen::Viewing { widgets };
             }
             Message::DetectPeaks => {
-                if let Screen::Analytics {
-                    widget,
-                    selected_channel,
-                    analysis_peaks,
-                    analysis_type,
-                } = &mut self.screen
-                {
-                    let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
-                    let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
-                    let mut peaks = detect_peaks_simple(&self.channels[*selected_channel][start_idx..end_idx], self.sample_rate);
-                    for p in peaks.iter_mut() {
-                        p[0] += self.time_offset;
+                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    // Rebuild all analysis plots
+                    let mut new_widgets = Vec::new();
+                    let mut ch_idx_vec = Vec::new();
+                    for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                        if selected {
+                            ch_idx_vec.push(ch_idx);
+                        }
                     }
-                    *analysis_peaks = peaks.clone();
-                    *widget = build_analysis_plot(
-                        &self.channels[*selected_channel],
-                        &self.channel_names[*selected_channel],
-                        &self.channel_units[*selected_channel],
-                        analysis_peaks,
-                        self.sample_rate,
-                        self.view_duration,
-                        self.time_offset,
-                        &self.x_axis_link,
-                        *analysis_type,
-                    );
+
+                    for ch_idx in ch_idx_vec {
+                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                        let mut peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                        for p in peaks.iter_mut() {
+                            p[0] += self.time_offset;
+                        }
+                        let widget = build_analysis_plot(
+                            &self.channels[ch_idx],
+                            &self.channel_names[ch_idx],
+                            &self.channel_units[ch_idx],
+                            &peaks,
+                            self.sample_rate,
+                            self.view_duration,
+                            self.time_offset,
+                            &self.x_axis_link,
+                            *analysis_type,
+                        );
+                        new_widgets.push(widget);
+                    }
+                    *widgets = new_widgets;
                 }
             }
             Message::SelectAnalysisType(atype) => {
-                if let Screen::Analytics {
-                    widget,
-                    selected_channel,
-                    analysis_peaks,
-                    analysis_type: _,
-                } = &mut self.screen
-                {
-                    *widget = build_analysis_plot(
-                        &self.channels[*selected_channel],
-                        &self.channel_names[*selected_channel],
-                        &self.channel_units[*selected_channel],
-                        analysis_peaks,
-                        self.sample_rate,
-                        self.view_duration,
-                        self.time_offset,
-                        &self.x_axis_link,
-                        atype,
-                    );
+                if let Screen::Analytics { widgets, analysis_type } = &mut self.screen {
+                    *analysis_type = atype;
+                    // Rebuild all analysis plots with new analysis type
+                    let mut new_widgets = Vec::new();
+                    let mut ch_idx_vec = Vec::new();
+                    for (ch_idx, &selected) in self.channel_selected.iter().enumerate() {
+                        if selected {
+                            ch_idx_vec.push(ch_idx);
+                        }
+                    }
+
+                    for ch_idx in ch_idx_vec {
+                        let start_idx = (self.time_offset * self.sample_rate).floor() as usize;
+                        let end_idx = ((self.time_offset + self.view_duration) * self.sample_rate).ceil() as usize;
+                        let peaks = detect_peaks_simple(&self.channels[ch_idx][start_idx..end_idx], self.sample_rate);
+                        let mut peaks_with_offset = peaks.clone();
+                        for p in peaks_with_offset.iter_mut() {
+                            p[0] += self.time_offset;
+                        }
+                        let widget = build_analysis_plot(
+                            &self.channels[ch_idx],
+                            &self.channel_names[ch_idx],
+                            &self.channel_units[ch_idx],
+                            &peaks_with_offset,
+                            self.sample_rate,
+                            self.view_duration,
+                            self.time_offset,
+                            &self.x_axis_link,
+                            atype,
+                        );
+                        new_widgets.push(widget);
+                    }
+                    *widgets = new_widgets;
                 }
             }
         }
@@ -448,14 +541,27 @@ impl AbfAnalytics {
                 self.show_channel_selector,
             );
 
+            // Height slider
+            let height_control = row![
+                text("Graph Height:").size(11).width(90),
+                slider(50.0..=300.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
+                text(format!("{:.0}px", self.graph_height)).size(11).width(50),
+            ]
+            .spacing(10)
+            .padding(10)
+            .align_y(Center);
+
             // Plots
             let mut plots_col = column![].spacing(2);
             for (index, widget) in widgets.iter().enumerate() {
                 let plot = widget.view().map(move |msg| Message::PlotMessage(index, msg));
                 let ch_label = text(format!("Channel {index}")).size(12);
-                let row_layout = row![container(ch_label).width(60).padding(5), container(plot).height(140).width(Fill)]
-                    .spacing(0)
-                    .width(Fill);
+                let row_layout = row![
+                    container(ch_label).width(60).padding(5),
+                    container(plot).height(self.graph_height).width(Fill)
+                ]
+                .spacing(0)
+                .width(Fill);
                 plots_col = plots_col.push(row_layout);
             }
 
@@ -463,11 +569,12 @@ impl AbfAnalytics {
             let content = if self.show_channel_selector {
                 column![
                     controls,
+                    height_control,
                     container(self.channel_selector_popup()).padding(20),
                     scrollable(plots_col).height(Fill)
                 ]
             } else {
-                column![controls, scrollable(plots_col).height(Fill),]
+                column![controls, height_control, scrollable(plots_col).height(Fill),]
             };
 
             container(content).height(Fill).width(Fill).padding(0).into()
@@ -477,15 +584,17 @@ impl AbfAnalytics {
     }
 
     fn view_analytics(&self) -> Element<'_, Message> {
-        if let Screen::Analytics {
-            widget,
-            selected_channel,
-            analysis_type,
-            analysis_peaks: _,
-        } = &self.screen
-        {
+        if let Screen::Analytics { widgets, analysis_type } = &self.screen {
+            let selected_count = self.channel_selected.iter().filter(|&&b| b).count();
+
             let controls = self
-                .build_control_panel(&self.position_input, &self.view_window_input, true, None, self.show_channel_selector)
+                .build_control_panel(
+                    &self.position_input,
+                    &self.view_window_input,
+                    true,
+                    Some(selected_count),
+                    self.show_channel_selector,
+                )
                 .push(
                     row![
                         text("Analysis Type:").size(11).width(60),
@@ -495,16 +604,44 @@ impl AbfAnalytics {
                     .align_y(Center),
                 );
 
-            let plot = widget.view().map(move |_msg| Message::PlotMessage(0, _msg));
-            let ch_label = text(format!("Channel {selected_channel}")).size(12);
-            let plot_section = row![container(ch_label).width(60).padding(5), container(plot).height(140).width(Fill)]
-                .spacing(0)
-                .width(Fill);
+            // Height slider
+            let height_control = row![
+                text("Graph Height:").size(11).width(90),
+                slider(50.0..=300.0, self.graph_height, Message::SetGraphHeight).width(200).step(5.0),
+                text(format!("{:.0}px", self.graph_height)).size(11).width(50),
+            ]
+            .spacing(10)
+            .padding(10)
+            .align_y(Center);
+
+            // Display analysis plots for all selected channels
+            let mut plots_col = column![].spacing(2);
+            let mut ch_idx = 0;
+            for (index, &selected) in self.channel_selected.iter().enumerate() {
+                if selected && ch_idx < widgets.len() {
+                    let widget = &widgets[ch_idx];
+                    let plot = widget.view().map(move |msg| Message::PlotMessage(index, msg));
+                    let ch_label = text(format!("Channel {}", index)).size(12);
+                    let row_layout = row![
+                        container(ch_label).width(60).padding(5),
+                        container(plot).height(self.graph_height).width(Fill)
+                    ]
+                    .spacing(0)
+                    .width(Fill);
+                    plots_col = plots_col.push(row_layout);
+                    ch_idx += 1;
+                }
+            }
 
             let content = if self.show_channel_selector {
-                column![controls, container(self.channel_selector_popup()).padding(20), plot_section,]
+                column![
+                    controls,
+                    height_control,
+                    container(self.channel_selector_popup()).padding(20),
+                    scrollable(plots_col).height(Fill)
+                ]
             } else {
-                column![controls, plot_section,]
+                column![controls, height_control, scrollable(plots_col).height(Fill)]
             };
 
             container(content).height(Fill).width(Fill).padding(0).into()
@@ -577,12 +714,18 @@ impl AbfAnalytics {
     fn channel_selector_popup(&self) -> Element<'static, Message> {
         let mut col = column![text("Select Channels:").size(16)].spacing(8).padding(15);
 
-        for (idx, selected) in self.channel_selected.iter().enumerate() {
+        for (idx, selected) in self.channel_selected_temp.iter().enumerate() {
             let label = format!("Channel {idx}");
-            col = col.push(checkbox(*selected).label(label).on_toggle(move |_| Message::ToggleChannel(idx)));
+            col = col.push(checkbox(*selected).label(label).on_toggle(move |_| Message::ToggleChannelTemp(idx)));
         }
 
-        col.push(button("Close").on_press(Message::ToggleChannelSelector).padding(6)).into()
+        let button_row = row![
+            button("Confirm").on_press(Message::ConfirmChannelSelection).padding(6),
+            button("Cancel").on_press(Message::CancelChannelSelection).padding(6),
+        ]
+        .spacing(8);
+
+        col.push(button_row).into()
     }
 }
 
