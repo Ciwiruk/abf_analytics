@@ -57,6 +57,7 @@ enum Message {
     RemoveCustomSineWave(usize),
     ToggleFFTOnPeaks,
     ToggleFFTSmoothing,
+    SetSensitivityInput(String),
     OpenFileDialog,
     SetReconstructionPositionInput(String),
     SetReconstructionViewWindowInput(String),
@@ -109,6 +110,8 @@ struct AbfAnalytics {
     reconstruction_offset: f32,               // vertical offset for sine wave
     fft_on_peaks: bool,                       // perform FFT on detected peaks instead of raw signal
     fft_smoothing: bool,                      // smooth FFT magnitudes to reduce spectral noise
+    sensitivity_input: String,                // sensitivity multiplier input from user
+    sensitivity: f32,                         // peak detection sensitivity (lower = more detections)
 
     // File selection on start screen
     selected_file_path: String,
@@ -154,6 +157,8 @@ impl AbfAnalytics {
             reconstruction_offset: 0.0,
             fft_on_peaks: false,
             fft_smoothing: false,
+            sensitivity_input: "1.67".to_string(),
+            sensitivity: 1.6666667_f32,
             selected_file_path: "Example.abf".to_string(),
             screen: Screen::Selecting,
         }
@@ -196,6 +201,7 @@ impl AbfAnalytics {
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
+                                    self.sensitivity,
                                 );
                                 new_plots.push(plot);
                             }
@@ -281,6 +287,7 @@ impl AbfAnalytics {
                                 &self.custom_sine_waves,
                                 self.fft_on_peaks,
                                 self.fft_smoothing,
+                                self.sensitivity,
                             );
                             new_plots.push(plot);
                         }
@@ -385,6 +392,7 @@ impl AbfAnalytics {
                                         &self.custom_sine_waves,
                                         self.fft_on_peaks,
                                         self.fft_smoothing,
+                                        self.sensitivity,
                                     );
                                     new_plots.push(plot);
                                 }
@@ -427,6 +435,7 @@ impl AbfAnalytics {
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
                             self.fft_smoothing,
+                            self.sensitivity,
                         );
                         plots.push(plot);
                     }
@@ -486,6 +495,7 @@ impl AbfAnalytics {
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
                             self.fft_smoothing,
+                            self.sensitivity,
                         );
                         new_plots.push(plot);
                     }
@@ -517,6 +527,7 @@ impl AbfAnalytics {
                             &self.custom_sine_waves,
                             self.fft_on_peaks,
                             self.fft_smoothing,
+                            self.sensitivity,
                         );
                         new_plots.push(plot);
                     }
@@ -535,7 +546,7 @@ impl AbfAnalytics {
                         let start_idx = start_idx.min(self.channels[first_ch_idx].len());
                         let end_idx = end_idx.min(self.channels[first_ch_idx].len());
 
-                        let peaks = detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate);
+                        let peaks = detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate, self.sensitivity);
                         if !peaks.is_empty() {
                             let mean_peak = peaks.iter().map(|p| p[1]).sum::<f64>() / peaks.len() as f64;
                             self.reconstruction_offset = mean_peak as f32;
@@ -550,6 +561,7 @@ impl AbfAnalytics {
                             self.time_offset,
                             self.reconstruction_offset,
                             self.fft_on_peaks,
+                            self.sensitivity,
                         ));
                     }
                 } else {
@@ -572,6 +584,7 @@ impl AbfAnalytics {
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
+                                    self.sensitivity,
                                 );
                                 new_plots.push(plot);
                             }
@@ -608,7 +621,8 @@ impl AbfAnalytics {
                                     let start_idx = start_idx.min(self.channels[first_ch_idx].len());
                                     let end_idx = end_idx.min(self.channels[first_ch_idx].len());
 
-                                    let peaks = detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate);
+                                    let peaks =
+                                        detect_peaks_simple(&self.channels[first_ch_idx][start_idx..end_idx], self.sample_rate, self.sensitivity);
                                     if !peaks.is_empty() {
                                         let mean_peak = peaks.iter().map(|p| p[1]).sum::<f64>() / peaks.len() as f64;
                                         self.reconstruction_offset = mean_peak as f32;
@@ -624,6 +638,7 @@ impl AbfAnalytics {
                                     self.time_offset,
                                     self.reconstruction_offset,
                                     self.fft_on_peaks,
+                                    self.sensitivity,
                                 ));
                             }
                         }
@@ -645,6 +660,7 @@ impl AbfAnalytics {
                                             &self.custom_sine_waves,
                                             self.fft_on_peaks,
                                             self.fft_smoothing,
+                                            self.sensitivity,
                                         );
                                         new_plots.push(plot);
                                     }
@@ -670,6 +686,7 @@ impl AbfAnalytics {
                                 self.time_offset,
                                 self.reconstruction_offset,
                                 self.fft_on_peaks,
+                                self.sensitivity,
                             ));
                         }
                     }
@@ -691,6 +708,7 @@ impl AbfAnalytics {
                                         &self.custom_sine_waves,
                                         self.fft_on_peaks,
                                         self.fft_smoothing,
+                                        self.sensitivity,
                                     );
                                     new_plots.push(plot);
                                 }
@@ -717,6 +735,7 @@ impl AbfAnalytics {
                                 self.reconstruction_time_offset,
                                 self.reconstruction_offset,
                                 self.fft_on_peaks,
+                                self.sensitivity,
                             ));
                         }
                     }
@@ -742,6 +761,7 @@ impl AbfAnalytics {
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
+                                    self.sensitivity,
                                 );
                                 new_plots.push(plot);
                             }
@@ -760,6 +780,7 @@ impl AbfAnalytics {
                             self.time_offset,
                             self.reconstruction_offset,
                             self.fft_on_peaks,
+                            self.sensitivity,
                         ));
                     }
                 }
@@ -783,12 +804,19 @@ impl AbfAnalytics {
                                     &self.custom_sine_waves,
                                     self.fft_on_peaks,
                                     self.fft_smoothing,
+                                    self.sensitivity,
                                 );
                                 new_plots.push(plot);
                             }
                         }
                         *plots = new_plots;
                     }
+                }
+            }
+            Message::SetSensitivityInput(input) => {
+                self.sensitivity_input = input.clone();
+                if let Ok(val) = input.parse::<f32>() {
+                    self.sensitivity = val.max(0.1); // Clamp to minimum of 0.1
                 }
             }
             Message::OpenFileDialog => {
@@ -827,6 +855,7 @@ impl AbfAnalytics {
                             self.reconstruction_time_offset,
                             self.reconstruction_offset,
                             self.fft_on_peaks,
+                            self.sensitivity,
                         ));
                     }
                 }
@@ -964,6 +993,26 @@ impl AbfAnalytics {
                     .align_y(Center),
                 );
 
+            // Add sensitivity control for Peak Detection mode
+            if matches!(*analysis_type, AnalysisType::PeakDetection) {
+                controls = controls.push(
+                    row![
+                        column![
+                            text("Peak Sensitivity").size(10),
+                            text_input("1.67", &self.sensitivity_input)
+                                .on_input(Message::SetSensitivityInput)
+                                .width(100)
+                                .padding(4),
+                        ]
+                        .spacing(4),
+                        space().width(Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Center)
+                    .padding(10),
+                );
+            }
+
             // Add custom sine wave checkbox and FFT checkbox only for FFT
             if matches!(*analysis_type, AnalysisType::FourierTransform) {
                 controls = controls.push(
@@ -982,6 +1031,26 @@ impl AbfAnalytics {
                     .spacing(20)
                     .padding(10),
                 );
+
+                // Add sensitivity control when FFT on peaks is enabled
+                if self.fft_on_peaks {
+                    controls = controls.push(
+                        row![
+                            column![
+                                text("Peak Sensitivity").size(10),
+                                text_input("1.67", &self.sensitivity_input)
+                                    .on_input(Message::SetSensitivityInput)
+                                    .width(100)
+                                    .padding(4),
+                            ]
+                            .spacing(4),
+                            space().width(Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(Center)
+                        .padding(10),
+                    );
+                }
             }
 
             // Add frequency/amplitude/phase input only when custom sine waves are enabled
@@ -1516,7 +1585,7 @@ fn smooth_fft_magnitude(points: &[[f64; 2]], window_size: usize) -> Vec<[f64; 2]
     out
 }
 
-pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
+pub fn detect_peaks_simple(data: &[f32], sample_rate: f64, sensitivity: f32) -> Vec<[f64; 2]> {
     let window_size = 2usize; // neighborhood for argmax around candidate
     let data_smoothed = moving_average(data, window_size);
 
@@ -1535,7 +1604,7 @@ pub fn detect_peaks_simple(data: &[f32], sample_rate: f64) -> Vec<[f64; 2]> {
     let local_mean = moving_average(&data_smoothed, local_window);
     let local_std = moving_std(&data_smoothed, local_window);
 
-    let k = 1.6666667_f32; // sensitivity multiplier: lower => more detections
+    let k = sensitivity; // sensitivity multiplier: lower => more detections
 
     let min_distance_sec = 0.02; // minimum separation in seconds (tune or compute per-record)
 
@@ -1655,6 +1724,7 @@ fn build_analysis_plot(
     custom_sine_waves: &[(f64, f64, f64)],
     fft_on_peaks: bool,
     fft_smoothing: bool,
+    sensitivity: f32,
 ) -> (PlotWidget, Vec<(f64, f64)>) {
     // Build signal data
     let signal_points: Vec<[f64; 2]> = channel_data
@@ -1741,7 +1811,7 @@ fn build_analysis_plot(
     // Filter and add peaks only if PeakDetection analysis type
     if matches!(analysis_type, AnalysisType::PeakDetection) {
         // Detect on full channel so peak timing stays in absolute time, then filter to visible window.
-        let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+        let all_peaks = detect_peaks_simple(channel_data, sample_rate, sensitivity);
         let filtered_peaks: Vec<[f64; 2]> = all_peaks
             .iter()
             .filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max)
@@ -1775,7 +1845,7 @@ fn build_analysis_plot(
         let fft_data: Vec<f32> = if fft_on_peaks {
             // Detect peaks in full signal and filter by current visible window.
             // This preserves absolute peak timing and gives more stable effective sampling.
-            let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+            let all_peaks = detect_peaks_simple(channel_data, sample_rate, sensitivity);
             let visible_peaks: Vec<[f64; 2]> = all_peaks
                 .iter()
                 .filter(|p| p[0] >= time_offset && p[0] <= zoomed_x_max)
@@ -2023,6 +2093,7 @@ fn build_reconstruction_plot_with_offset(
     time_offset: f64,
     sine_offset: f32,
     fft_on_peaks: bool,
+    sensitivity: f32,
 ) -> PlotWidget {
     if custom_sine_waves.is_empty() {
         return PlotWidgetBuilder::new()
@@ -2034,7 +2105,7 @@ fn build_reconstruction_plot_with_offset(
 
     // Extract detected peaks from the ENTIRE channel (not just visible window)
     // This gives better detection context, then filter to visible window
-    let all_peaks = detect_peaks_simple(channel_data, sample_rate);
+    let all_peaks = detect_peaks_simple(channel_data, sample_rate, sensitivity);
     let zoomed_x_max = time_offset + view_duration;
     let visible_peaks: Vec<[f64; 2]> = all_peaks
         .iter()
