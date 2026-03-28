@@ -2,6 +2,10 @@
 name = "abf_analytics"
 version = "0.1.0"
 edition = "2021"
+description = "Desktop application for analyzing ABF (Axon Binary Format) electrophysiology data files"
+license = "MIT"
+repository = "https://github.com/Ciwiruk/abf_analytics"
+readme = "README.md"
 
 [dependencies]
 abf_reader = { version = "0.1.0", path = "abf_reader" }
