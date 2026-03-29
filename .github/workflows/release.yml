@@ -48,6 +48,12 @@ jobs:
             artifact_name: abf_analytics
             asset_name: abf_analytics-linux-x64
             cross: false
+          # Linux ARM64 (cross-compile from x64 on ubuntu-22.04 for stable arm64 repos)
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            artifact_name: abf_analytics
+            asset_name: abf_analytics-linux-arm64
+            cross: true
           # macOS x64 (native)
           - os: macos-latest
             target: x86_64-apple-darwin
@@ -88,7 +94,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
-      - name: Install dependencies (Linux)
+      - name: Install dependencies (Linux x64)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -103,12 +109,47 @@ jobs:
             libwayland-dev \
             pkg-config
 
+      - name: Install cross-compilation dependencies (Linux ARM64)
+        if: matrix.cross && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs) main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev:arm64 \
+            libxcb-render0-dev:arm64 \
+            libxcb-shape0-dev:arm64 \
+            libxcb-xfixes0-dev:arm64 \
+            libxkbcommon-dev:arm64 \
+            libssl-dev:arm64 \
+            libvulkan-dev:arm64 \
+            libwayland-dev:arm64
+
+      - name: Set up cross-compilation environment (Linux ARM64)
+        if: matrix.cross && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+          echo '' >> .cargo/config.toml
+          echo '[env]' >> .cargo/config.toml
+          echo 'PKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig"' >> .cargo/config.toml
+          echo 'PKG_CONFIG_ALLOW_CROSS = "1"' >> .cargo/config.toml
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary (Linux)
+      - name: Strip binary (Linux x64)
         if: matrix.os == 'ubuntu-latest'
         run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+      - name: Strip binary (Linux ARM64)
+        if: matrix.cross && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
       - name: Rename binary for upload (Windows/Linux)
         if: runner.os != 'macOS'
